@@ -30,6 +30,14 @@ on:
         required: false
         default: '0.08'
         type: string
+      quality_mode:
+        description: 'Chế độ chất lượng: MAX_CINEMA_45MBPS (CRF 15, 45Mbps ~3.5-4.5GB/video) hoặc STANDARD_22MBPS'
+        required: false
+        default: 'MAX_CINEMA_45MBPS'
+        type: choice
+        options:
+          - 'MAX_CINEMA_45MBPS'
+          - 'STANDARD_22MBPS'
 
 jobs:
   prepare-matrix:
@@ -93,6 +101,10 @@ jobs:
           pip install -q gdown yt-dlp opencv-python-headless numpy
 
       - name: 🎬 Auto-QA, Self-Adjust & Render 4K 60fps Master (${{ matrix.project }})
+        env:
+          MAX_BITRATE_MBPS: ${{ inputs.quality_mode == 'STANDARD_22MBPS' && '22' || '45' }}
+          TARGET_CRF: ${{ inputs.quality_mode == 'STANDARD_22MBPS' && '18' || '15' }}
+          TARGET_PRESET: 'veryfast'
         run: |
           python scripts/discovery_master_pipeline.py \
             --project-key "${{ matrix.project }}" \
@@ -119,8 +131,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="discovery-4k60-masters"
+          for mp4 in output/*.mp4; do
+            [ -e "$mp4" ] || continue
+            sz=$(stat -c%s "$mp4")
+            if [ "$sz" -gt 2000000000 ]; then
+              echo "📦 Video $mp4 is $((sz / 1048576)) MB (>2GB Cinema Max Bitrate); splitting into lossless 1900MB parts for Cloud Release..."
+              split -b 1900M -d -a 2 "$mp4" "${mp4}.part"
+              rm -f "$mp4"
+            fi
+          done
           for attempt in 1 2 3 4 5; do
-            gh release upload "$TAG" output/*.mp4 output/*.json --clobber && break
+            gh release upload "$TAG" output/*.mp4* output/*.json --clobber && break
             echo "Retry $attempt uploading to release..."
             sleep $((attempt * 4))
           done
