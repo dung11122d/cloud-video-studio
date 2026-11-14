@@ -1,0 +1,115 @@
+name: 🎬 Cloud Video Editor & YouTube Auto-Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_source:
+        description: 'Link Video gốc (YouTube URL / Link tải trực tiếp MP4 / Google Drive)'
+        required: true
+        type: string
+      trim_start:
+        description: 'Cắt từ thời điểm (VD: 00:00:05 - Để trống nếu giữ từ đầu)'
+        required: false
+        default: ''
+        type: string
+      trim_end:
+        description: 'Cắt đến thời điểm (VD: 00:01:30 - Để trống nếu giữ đến cuối)'
+        required: false
+        default: ''
+        type: string
+      remove_silence:
+        description: 'Tự động cắt bỏ khoảng lặng / ngập ngừng (Auto-Editor)'
+        required: false
+        default: true
+        type: boolean
+      aspect_mode:
+        description: 'Tỷ lệ khung hình xuất ra'
+        required: false
+        default: 'original'
+        type: choice
+        options:
+          - original
+          - 9:16-blur
+          - 9:16-crop
+      speed:
+        description: 'Tốc độ video (VD: 1.0 hoặc 1.05)'
+        required: false
+        default: '1.0'
+        type: string
+      seo_keyword:
+        description: 'Từ khóa chính để tự động trích xuất Tags đối thủ & tạo SEO meta.json'
+        required: false
+        default: ''
+        type: string
+      custom_title:
+        description: 'Tiêu đề video (Để trống sẽ tự tạo theo từ khóa SEO)'
+        required: false
+        default: ''
+        type: string
+      upload_to_youtube:
+        description: 'Tự động đăng lên YouTube (Cần cài YT_CLIENT_SECRETS & YT_REQUEST_TOKEN trong Repo Secrets)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  render-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🛠️ Cài đặt FFmpeg & Python 3.12 trên Cloud Runner
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 📦 Cài đặt công cụ (FFmpeg, yt-dlp, auto-editor, youtube-transcript-api)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip
+          pip install yt-dlp auto-editor youtube-transcript-api
+
+      - name: ⚡ Chạy Cloud Video Editor & Tạo SEO Metadata (trên máy chủ GitHub 4-vCPU / 16GB RAM)
+        run: |
+          python scripts/cloud_editor.py \
+            --source "${{ inputs.video_source }}" \
+            --trim-start "${{ inputs.trim_start }}" \
+            --trim-end "${{ inputs.trim_end }}" \
+            --remove-silence "${{ inputs.remove_silence }}" \
+            --aspect "${{ inputs.aspect_mode }}" \
+            --speed "${{ inputs.speed }}" \
+            --seo-keyword "${{ inputs.seo_keyword }}" \
+            --title "${{ inputs.custom_title }}" \
+            --output-dir "output"
+
+      - name: 🚀 Tự động Upload lên YouTube (Nếu bật upload_to_youtube)
+        if: ${{ inputs.upload_to_youtube == true }}
+        env:
+          YT_CLIENT_SECRETS: ${{ secrets.YT_CLIENT_SECRETS }}
+          YT_REQUEST_TOKEN: ${{ secrets.YT_REQUEST_TOKEN }}
+        run: |
+          if [ -z "$YT_CLIENT_SECRETS" ] || [ -z "$YT_REQUEST_TOKEN" ]; then
+            echo "⚠️ Chưa cấu hình YT_CLIENT_SECRETS hoặc YT_REQUEST_TOKEN trong Settings -> Secrets. Bỏ qua bước upload."
+            exit 0
+          fi
+          curl -sL https://github.com/porjo/youtubeuploader/releases/latest/download/youtubeuploader_1.25.5_Linux_amd64.tar.gz | tar xz
+          echo "$YT_CLIENT_SECRETS" > client_secrets.json
+          echo "$YT_REQUEST_TOKEN" > request.token
+          ./youtubeuploader \
+            -filename "output/final_video.mp4" \
+            -metaJSON "output/meta.json" \
+            -secrets "client_secrets.json" \
+            -cache "request.token"
+
+      - name: 📦 Lưu Video đã Render & File SEO vào GitHub Artifacts (Tải về bất cứ lúc nào)
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-video-and-seo-meta
+          path: |
+            output/final_video.mp4
+            output/meta.json
+          retention-days: 7
