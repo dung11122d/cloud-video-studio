@@ -99,15 +99,16 @@ def detect_ai_tail_glitch(clip_path: Path, raw_dur: float) -> tuple[float, float
         duration = frame_count / fps if fps > 0 else raw_dur
 
         sharpness = []
-        step = max(int(fps // 4), 1)
-        for idx in range(0, frame_count, step):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ok, frame = cap.read()
-            if not ok or frame is None:
+        step = max(int(fps // 2), 1)
+        for idx in range(frame_count):
+            if not cap.grab():
                 break
-            small = cv2.resize(frame, (320, 180))
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-            sharpness.append((idx / fps, float(cv2.Laplacian(gray, cv2.CV_64F).var())))
+            if idx % step == 0 or idx == frame_count - 1:
+                ok, frame = cap.retrieve()
+                if ok and frame is not None:
+                    small = cv2.resize(frame, (320, 180))
+                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                    sharpness.append((idx / fps, float(cv2.Laplacian(gray, cv2.CV_64F).var())))
         cap.release()
 
         avg_sharp = sum(s for _, s in sharpness) / len(sharpness) if sharpness else 100.0
@@ -131,10 +132,8 @@ def normalize_scene_worker(args_tuple) -> dict | None:
     # This processes 22.5x fewer pixels during grading/sharpening while preserving 100% visual accuracy.
     vf_chain = (
         "scale=1280:720:flags=lanczos,"
-        "cas=0.55,"
-        "unsharp=3:3:0.40:3:3:0.0,"
+        "unsharp=3:3:0.50:3:3:0.0,"
         "eq=contrast=1.03:brightness=0.01:saturation=1.06:gamma=1.02,"
-        "colorbalance=rs=-0.01:gs=0.0:bs=0.015:rh=0.015:gh=0.008:bh=-0.01,"
         f"fps={fps},"
         "format=yuv420p"
     )
@@ -259,6 +258,7 @@ def generate_pure_ambient_bgm(out_m4a: Path):
     """
     Pure warm harmonic sine pad (NO pink noise / NO static hiss 'rồ rồ'!).
     Soft C-major / F-maj7 warm chords (174.61Hz, 261.63Hz, 329.63Hz, 392.00Hz) with gentle reverb.
+    Note: FFmpeg tremolo filter requires f in [0.1, 20000.0].
     """
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -267,10 +267,10 @@ def generate_pure_ambient_bgm(out_m4a: Path):
         "-f", "lavfi", "-i", "sine=frequency=329.63:duration=180",
         "-f", "lavfi", "-i", "sine=frequency=392.00:duration=180",
         "-filter_complex",
-        "[0:a]volume=0.08,tremolo=f=0.12:d=0.35[a0];"
-        "[1:a]volume=0.07,tremolo=f=0.10:d=0.40[a1];"
-        "[2:a]volume=0.05,tremolo=f=0.08:d=0.40[a2];"
-        "[3:a]volume=0.04,tremolo=f=0.06:d=0.45[a3];"
+        "[0:a]volume=0.08,tremolo=f=0.25:d=0.35[a0];"
+        "[1:a]volume=0.07,tremolo=f=0.20:d=0.40[a1];"
+        "[2:a]volume=0.05,tremolo=f=0.15:d=0.40[a2];"
+        "[3:a]volume=0.04,tremolo=f=0.12:d=0.45[a3];"
         "[a0][a1][a2][a3]amix=inputs=4:duration=longest,lowpass=f=1200,aecho=0.8:0.88:60:0.35,"
         "afade=t=in:st=0:d=3,afade=t=out:st=177:d=3[outa]",
         "-map", "[outa]", "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
@@ -330,7 +330,7 @@ def main():
 
     t2 = time.time()
     print(f"🎞️ [3/4] Applying 0.5s Xfade Video & Acrossfade Audio Transitions across all {len(norm_results)} scenes...", flush=True)
-    BATCH_SIZE = 6
+    BATCH_SIZE = 9
     l1_futures = []
     l1_batches = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -342,26 +342,11 @@ def main():
         for b_idx, b_out, fut in l1_futures:
             b_dur = fut.result()
             l1_batches.append({"path": b_out, "duration": b_dur})
-            print(f"   ✔️ L1 Batch {b_idx+1}/{len(l1_futures)} complete ({b_dur:.2f}s)", flush=True)
-
-    # Hierarchical Level-2 Join (groups of 4 batches -> 3 super-batches in parallel)
-    SUPER_SIZE = 4
-    l2_futures = []
-    l2_batches = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        for s_idx, start_i in enumerate(range(0, len(l1_batches), SUPER_SIZE)):
-            chunk = l1_batches[start_i:start_i + SUPER_SIZE]
-            s_out = batch_dir / f"l2_super_{s_idx+1:02d}.mp4"
-            fut = pool.submit(join_batch_with_xfade, chunk, s_out, 0.5, len(norm_results) + start_i, args.fps)
-            l2_futures.append((s_idx, s_out, fut))
-        for s_idx, s_out, fut in l2_futures:
-            s_dur = fut.result()
-            l2_batches.append({"path": s_out, "duration": s_dur})
-            print(f"   ✔️ L2 Super-Batch {s_idx+1}/{len(l2_futures)} complete ({s_dur:.2f}s)", flush=True)
+            print(f"   ✔️ Batch {b_idx+1}/{len(l1_futures)} complete ({b_dur:.2f}s)", flush=True)
 
     merged_scenes = out_dir / "merged_hd60.mp4"
-    total_dur = join_batch_with_xfade(l2_batches, merged_scenes, overlap=0.5, start_t_idx=len(norm_results) + 20, keyint=args.fps)
-    print(f"   ✔️ All 72 scenes & 0.5s transitions assembled ({total_dur:.2f}s) in {time.time() - t2:.1f}s", flush=True)
+    total_dur = join_batch_with_xfade(l1_batches, merged_scenes, overlap=0.5, start_t_idx=len(norm_results) + 10, keyint=args.fps)
+    print(f"   ✔️ All {len(norm_results)} scenes & 0.5s transitions assembled ({total_dur:.2f}s) in {time.time() - t2:.1f}s", flush=True)
 
     t3 = time.time()
     print(f"🎵 [4/4] Mixing Continuous Master Audio & Parallel Upscaling to {width}x{height} @ {args.fps}fps...", flush=True)
