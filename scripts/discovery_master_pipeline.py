@@ -118,9 +118,11 @@ def normalize_scene_worker(args_tuple) -> dict | None:
 
     dst = graded_dir / f"scene_{idx:03d}.mp4"
 
-    # Stage 1: Native 24fps Cinema Color Grade + Unsharp Detail Enhancement (2.5x faster than grading @ 60fps)
+    # Stage 1: Native 24fps AI Corner-Logo Removal (delogo removes hallucinated BBC/TV watermarks at top-left)
+    # + Unsharp Detail Enhancement + Cinema Color Grade (2.5x faster than grading @ 60fps)
     vf_chain = (
         "scale=1280:720:flags=lanczos,"
+        "delogo=x=6:y=14:w=98:h=36,"
         "unsharp=3:3:0.55:3:3:0.0,"
         "eq=contrast=1.03:brightness=0.01:saturation=1.06:gamma=1.02,"
         "format=yuv420p"
@@ -138,7 +140,8 @@ def normalize_scene_worker(args_tuple) -> dict | None:
             "highpass=f=75,"
             "lowpass=f=11500,"
             "afftdn=nf=-25,"
-            "dynaudnorm=f=150:g=13:p=0.90:m=10.0,"
+            "acompressor=threshold=-30dB:ratio=3.5:attack=10:release=200:makeup=8dB,"
+            "dynaudnorm=f=75:g=7:p=0.92:m=30.0,"
             "aresample=48000,"
             "aformat=sample_fmts=fltp:channel_layouts=stereo"
         )
@@ -363,7 +366,7 @@ def main():
         f"[0:a]volume=1.0[orig_a];"
         f"[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
         f"volume={args.bgm_volume:.2f},afade=t=in:st=0:d=2.5,afade=t=out:st={fade_out_st:.2f}:d=3.5[bgm_a];"
-        f"[orig_a][bgm_a]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.95[final_a]"
+        f"[orig_a][bgm_a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95[final_a]"
     )
     subprocess.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
