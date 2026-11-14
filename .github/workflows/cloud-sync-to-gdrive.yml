@@ -1,0 +1,66 @@
+name: ☁️ Direct Cloud-to-Google-Drive Sync (Zero Local Download)
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_folder_id:
+        description: 'ID thư mục Google Drive đích'
+        required: true
+        default: '1wZmfSYFBWDwhydvtFGR9eK-GKspjvJlz'
+        type: string
+      release_tag:
+        description: 'Release Tag trên GitHub Cloud chứa 30 video 4K 60fps'
+        required: true
+        default: 'discovery-4k60-masters'
+        type: string
+
+jobs:
+  cloud-to-gdrive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: 📦 Install rclone & gh CLI
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone jq
+
+      - name: 🔑 Configure Google Drive Rclone Token
+        env:
+          RCLONE_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+        run: |
+          if [ -z "$RCLONE_B64" ]; then
+            echo "::error::Chưa cấu hình RCLONE_CONFIG_BASE64 secret trên GitHub repo."
+            exit 1
+          fi
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_B64" | base64 -d > ~/.config/rclone/rclone.conf
+
+      - name: 🚀 Stream All 30 Videos + SEO/QA Directly from GitHub Cloud to Google Drive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+          FOLDER_ID: ${{ inputs.drive_folder_id }}
+        run: |
+          mkdir -p work_sync
+          gh release view "$TAG" --json assets > assets.json
+
+          # 1. Upload all JSONs & single-file MP4s directly
+          jq -r '.assets[] | select(.name | test("\\.part[0-9]+$") | not) | "\(.name)\t\(.url)"' assets.json | while IFS=$'\t' read -r name url; do
+            echo "☁️ Syncing $name -> Google Drive folder $FOLDER_ID..."
+            gh release download "$TAG" -p "$name" -D work_sync --clobber
+            rclone copy "work_sync/$name" "gdrive:Rendered_4K60_Discovery_Masters" --drive-root-folder-id "$FOLDER_ID" --transfers 4 --drive-chunk-size 128M
+            rm -f "work_sync/$name"
+          done
+
+          # 2. Reassemble any multi-part >2GB MAX_CINEMA_45MBPS videos on the cloud runner and push to Google Drive
+          jq -r '.assets[] | select(.name | test("\\.part00$")) | .name' assets.json | while read -r part0; do
+            base_mp4="${part0%.part00}"
+            echo "🎬 Reassembling >2GB Max-Bitrate 4K60 Master: $base_mp4 on Cloud..."
+            gh release download "$TAG" -p "${base_mp4}.part*" -D work_sync --clobber
+            cat work_sync/"${base_mp4}".part* > "work_sync/${base_mp4}"
+            rm -f work_sync/"${base_mp4}".part*
+            echo "☁️ Uploading full >2GB Max-Bitrate Master $base_mp4 -> Google Drive..."
+            rclone copy "work_sync/${base_mp4}" "gdrive:Rendered_4K60_Discovery_Masters" --drive-root-folder-id "$FOLDER_ID" --drive-chunk-size 128M
+            rm -f "work_sync/${base_mp4}"
+          done
+          echo "🎉 100% Cloud-to-Google-Drive Transfer Complete!"
