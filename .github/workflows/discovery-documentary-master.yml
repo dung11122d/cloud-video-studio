@@ -32,7 +32,7 @@ jobs:
         run: |
           python3 - << 'EOF'
           import json, os
-          manifest = json.load(open("scripts/drive_manifest.json"))
+          manifest = json.load(open("scripts/drive_manifest.json", encoding="utf-8-sig"))
           keys = list(manifest.keys())
           choice = "${{ inputs.batch_selection }}"
           if choice.startswith("Batch_1"):
