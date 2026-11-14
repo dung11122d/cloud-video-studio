@@ -1,55 +1,68 @@
-name: 🌍 Discovery Documentary Master (72-Scene AI Cleanup, Cinema Grade & Sound Design)
+name: 🚀 Multi-Threaded Discovery Documentary Cloud Studio (Parallel Matrix + Auto Drive Upload)
 
 on:
   workflow_dispatch:
     inputs:
-      project_choice:
-        description: 'Chọn Bộ Phim Tài Liệu Khoa Học trong Google Drive của bạn (Hoặc chọn Custom)'
+      batch_selection:
+        description: 'Chọn Nhóm Phim để chạy Đa Luồng Song Song (Mỗi phim chạy trên 1 máy chủ 4-vCPU riêng biệt cùng lúc)'
         required: true
-        default: 'Baya_Weaver_12min (1yEovNBIIeH6P_f8KJUDD9DiDa3bK76OB)'
+        default: 'Batch_1 (Top 6 Flagship Documentaries)'
         type: choice
         options:
-          - 'Baya_Weaver_12min (1yEovNBIIeH6P_f8KJUDD9DiDa3bK76OB)'
-          - 'ElfOwl_ScorpionHunter_12min (19LBpBXyktEOYyVtAEQuF3_1PAUdC8Q9k)'
-          - 'Great_Eared_Nightjar_Dragon_Bird_12min (1aFeaTiShCiI-8VDQGbuWxUUyT0VwqKS6)'
-          - 'GreatHornedOwl_BobcatDuel_12min (1tjWo1X85WuNm3-PKuGtTpIBWh0w7rasZ)'
-          - 'Harpy_Eagle_Grizzly_Talons_12min (1tCIaOlg73YtOBel2EoZipYJ6JMw8Ykwd)'
-          - 'Long_Wattled_Umbrellabird_12min (1F8R_xGZF7rWFriFCdasf4GCGUM3Dyu8G)'
-          - 'RedCockadedWoodpecker_Fortress_12min (1jU-IStubUQfSwHLFZ7ziKdNBxJ9EXG3w)'
-          - 'Horned_Coot_Stone_Island_10min (15AOyNDou6UvvVoiivS9IkYehEUoJUlki)'
-          - 'Great_Potoo_Camouflage_12min (1J26sIbd473mVFWwskkn5e0-xmOAZLwbT)'
-          - 'Barnacle_Goose_400ft_Cliff_Leap_12min (1k2erCqT5FzI5rpk6GsywZFdFQkc7uXh_)'
-          - 'Shimaenaga_Snow_Fairy_Nest_12min (13LZYJoOHzgzQPFS2N0FH0c1fWVp0JBCx)'
-          - 'Himalayan_Monal_Rainbow_Pheasant_12min (1BR6w1dT2LMiXszKmzFy95AuEqaeLvbau)'
-          - 'Southern_Cassowary_Dinosaur_Kick_12min (1pRrUJE9sZxO5UstHHap2zOalg0neNu8L)'
-          - 'Rufous_Hornero_Mud_Oven_12min (18ngfSv4q17v3M8AhlXx3T_u3jR4eDBFn)'
-          - 'Northern_Gannet_100kmh_Torpedo_12min (1i8i2DQwaX2T-uXVrI31nquMZosCjKyXP)'
-          - 'Common_Tailorbird_Stitched_Leaf_12min (1i4UQGMZ7oS9OU-u33OoPOV-_Ds62OLYq)'
-          - 'African_Jacana_Lily_Trotter_12min (1Zh2a_g45vyZiN6-JwO_uXgu1Wj6NgApv)'
-          - 'Sociable_Weaver_1Ton_Fortress_12min (19BWhGOBT3NB5jbMBx_OI8VladDgsM6tU)'
-          - 'Hoatzin_WingClawedChicks_Amazon_12min (1SN6DvqYQAShLfNv9UzORFZBtCN073pq8)'
-          - 'Vogelkop_Bowerbird_Architect_12min (1q9wV-QIiHcj3V012qMwnve-6X95j5AmK)'
-          - 'SnowyOwl_ArcticTundra_FoxStrike_12min (17kQd9eNJH0IFlZDp1D54lCS56XVzrZGf)'
-          - 'GreatGreyOwl_Acoustic_SnowPlunge_12min (1qMWAk6Y0Tr60qDXfXYEdkptZfLMExXOO)'
-          - 'BarnOwl_0dB_Stealth_RatSnake_12min (1ubpytteDybPIq7WhUElCZ5DFv1uAIoiw)'
-      custom_drive_folder:
-        description: 'Hoặc nhập link/ID thư mục Google Drive tùy chỉnh (nếu có)'
+          - 'Batch_1 (Top 6 Flagship Documentaries)'
+          - 'Batch_2 (Documentaries 7 to 12)'
+          - 'Batch_3 (Documentaries 13 to 18)'
+          - 'Batch_4 (Documentaries 19 to 24)'
+          - 'Batch_5 (Documentaries 25 to 30)'
+          - 'ALL_30_DOCUMENTARIES (Chạy đồng loạt cả 30 phim)'
+      gdrive_target_folder_id:
+        description: 'ID Thư mục Google Drive nhận video thành phẩm (Tùy chọn - kết hợp với RCLONE_CONFIG_BASE64 trong Secrets)'
         required: false
-        default: ''
-        type: string
-      max_scenes:
-        description: 'Số lượng cảnh tối đa cần ghép (Mặc định: 72 cảnh = ~12 phút)'
-        required: false
-        default: '72'
+        default: '1wZmfSYFBWDwhydvtFGR9eK-GKspjvJlz'
         type: string
 
 jobs:
-  discovery-cloud-master:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      projects_json: ${{ steps.set-matrix.outputs.projects_json }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-matrix
+        run: |
+          python3 - << 'EOF'
+          import json, os
+          manifest = json.load(open("scripts/drive_manifest.json"))
+          keys = list(manifest.keys())
+          choice = "${{ inputs.batch_selection }}"
+          if choice.startswith("Batch_1"):
+              selected = keys[0:6]
+          elif choice.startswith("Batch_2"):
+              selected = keys[6:12]
+          elif choice.startswith("Batch_3"):
+              selected = keys[12:18]
+          elif choice.startswith("Batch_4"):
+              selected = keys[18:24]
+          elif choice.startswith("Batch_5"):
+              selected = keys[24:30]
+          else:
+              selected = keys
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"projects_json={json.dumps(selected)}\n")
+          EOF
+
+  parallel-cloud-render:
+    needs: prepare-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        project_key: ${{ fromJson(needs.prepare-matrix.outputs.projects_json) }}
 
     steps:
-      - name: 📥 Checkout Cloud Studio
+      - name: 📥 Checkout Cloud Video Studio
         uses: actions/checkout@v4
 
       - name: 🐍 Setup Python 3.12 & FFmpeg
@@ -57,37 +70,46 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 📦 Install OpenCV, gdown & FFmpeg
+      - name: 📦 Install OpenCV, gdown, FFmpeg & rclone
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          pip install --upgrade pip
-          pip install gdown opencv-python-headless numpy
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg rclone
+          pip install -q --upgrade pip
+          pip install -q gdown opencv-python-headless numpy
 
-      - name: 🎬 Run AI Artifact Filter, Discovery Color Grading & Sound Design on Cloud
+      - name: ⚡ Multi-Threaded Edit, AI Cleanup, Cinema Grade & Sound Design
         run: |
-          CHOICE="${{ inputs.project_choice }}"
-          CUSTOM="${{ inputs.custom_drive_folder }}"
-          if [ -n "$CUSTOM" ]; then
-            FOLDER_ID="$CUSTOM"
-            TOPIC="Custom_Discovery_Documentary"
-          else
-            TOPIC=$(echo "$CHOICE" | awk '{print $1}')
-            FOLDER_ID=$(echo "$CHOICE" | sed -n 's/.*(\(.*\)).*/\1/p')
-          fi
-          echo "Processing Topic: $TOPIC | Drive Folder ID: $FOLDER_ID"
           python scripts/discovery_master_pipeline.py \
-            --drive-folder "https://drive.google.com/drive/folders/$FOLDER_ID" \
-            --topic-name "$TOPIC" \
-            --max-scenes "${{ inputs.max_scenes }}" \
+            --project-key "${{ matrix.project_key }}" \
             --output-dir "output"
 
-      - name: 📤 Upload Rendered Master Video & SEO Package to GitHub Artifacts
+      - name: ☁️ Auto-Upload to Google Drive (via Rclone if configured)
+        env:
+          RCLONE_CONFIG_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          TARGET_FOLDER_ID: ${{ inputs.gdrive_target_folder_id }}
+        run: |
+          if [ -n "$RCLONE_CONFIG_B64" ]; then
+            mkdir -p ~/.config/rclone
+            echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
+            echo "Uploading rendered master video to Google Drive folder $TARGET_FOLDER_ID..."
+            rclone copy output/ gdrive:Rendered_Discovery_Masters --drive-root-folder-id "$TARGET_FOLDER_ID" -P
+          else
+            echo "ℹ️ RCLONE_CONFIG_BASE64 secret not set yet; publishing to GitHub Releases & Artifacts for instant web download."
+          fi
+
+      - name: 🌐 Publish to GitHub Release (Direct Web Download Link)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="discovery-masters-v1"
+          gh release view "$TAG" || gh release create "$TAG" --title "🌍 Rendered Discovery Documentaries (1080p Cinema Master + SEO)" --notes "Auto-rendered Discovery Documentary Masters with AI Artifact Removal, Cinema Color Grade, and Multi-Layer Soundscape."
+          gh release upload "$TAG" output/*.mp4 output/*.json --clobber
+
+      - name: 📦 Save to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Discovery-Master-Video-And-SEO
+          name: Master-${{ matrix.project_key }}
           path: |
             output/*.mp4
-            output/meta.json
-            output/ai_qc_report.json
+            output/*.json
           retention-days: 14
