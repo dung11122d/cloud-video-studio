@@ -85,12 +85,12 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 📦 Install FFmpeg, OpenCV, gdown & rclone
+      - name: 📦 Install FFmpeg, OpenCV, yt-dlp, gdown & rclone
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg rclone
           pip install -q --upgrade pip
-          pip install -q gdown opencv-python-headless numpy
+          pip install -q gdown yt-dlp opencv-python-headless numpy
 
       - name: 🎬 Auto-QA, Self-Adjust & Render 4K 60fps Master (${{ matrix.project }})
         run: |
