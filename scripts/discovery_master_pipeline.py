@@ -240,9 +240,11 @@ def normalize_scene_worker(args_tuple) -> dict | None:
         delogo_chain += ",delogo=x=1170:y=14:w=102:h=36"
 
     vf_chain = (
-        f"scale=1280:720:flags=lanczos,"
+        f"scale=1280:720:flags=lanczos+accurate_rnd+full_chroma_int,"
         f"{delogo_chain},"
-        f"unsharp=3:3:0.55:3:3:0.0,"
+        f"hqdn3d=1.2:0.9:2.5:2.0,"
+        f"cas=strength=0.45,"
+        f"unsharp=5:5:0.75:3:3:0.25,"
         f"eq=contrast={cal['contrast']:.2f}:brightness={cal['brightness']:.3f}:"
         f"saturation={cal['saturation']:.2f}:gamma={cal['gamma']:.2f},"
         f"format=yuv420p"
@@ -351,7 +353,7 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
             accumulated_offset = offset + batch_items[i]["duration"]
 
     fade_out_st = max(0.1, accumulated_offset - 0.22)
-    v_post = f"scale={width}:{height}:flags=bicubic,format=yuv420p"
+    v_post = f"scale={width}:{height}:flags=lanczos+accurate_rnd+full_chroma_int,unsharp=3:3:0.45:3:3:0.0,format=yuv420p"
     a_post = "anull"
     if b_idx > 0:
         v_post += ",fade=t=in:st=0:d=0.20"
@@ -364,13 +366,19 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
     a_chains.append(f"[ax_raw]{a_post}[aout]")
 
     filter_complex = ";".join(v_chains + a_chains)
+    max_bitrate_mbps = os.environ.get("MAX_BITRATE_MBPS", "45").strip()
+    target_crf = os.environ.get("TARGET_CRF", "15").strip()
+    target_preset = os.environ.get("TARGET_PRESET", "veryfast").strip()
+    bufsize_mbps = str(int(max_bitrate_mbps) * 2)
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         *inputs,
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-        "-maxrate", "16M", "-bufsize", "32M",
+        "-c:v", "libx264", "-preset", target_preset,
+        "-profile:v", "high", "-level:v", "5.2",
+        "-crf", target_crf,
+        "-maxrate", f"{max_bitrate_mbps}M", "-bufsize", f"{bufsize_mbps}M",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
         "-threads", "2",
