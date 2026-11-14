@@ -132,14 +132,15 @@ def normalize_scene_worker(args_tuple) -> dict | None:
 
     # Crystal-Clear 4K / High-Bitrate 60fps Upscaling & Cinema Color Grade (NO artificial noise!)
     # - scale with lanczos + accurate_rnd for razor-sharp upscaling from 720p to 4K/2K
-    # - cas=0.45: Contrast Adaptive Sharpening (makes feathers, eyes, and foliage crisp)
-    # - eq & colorbalance: Natural BBC Earth / Discovery contrast and subtle golden-hour warmth
+    # - cas=0.50: Contrast Adaptive Sharpening + unsharp micro-detail for feather/nesting fibers
+    # - eq & colorbalance: Natural BBC Earth / Discovery contrast (1.03) and natural saturation (1.06) without crushing dark nest interior shadows
     vf_chain = (
         f"scale={width}:{height}:flags=lanczos+accurate_rnd+full_chroma_int,"
         f"fps={fps},"
-        f"cas=0.45,"
-        f"eq=contrast=1.05:brightness=0.005:saturation=1.10:gamma=0.98,"
-        f"colorbalance=rs=-0.015:gs=0.0:bs=0.02:rh=0.02:gh=0.01:bh=-0.015,"
+        f"cas=0.50,"
+        f"unsharp=3:3:0.35:3:3:0.0,"
+        f"eq=contrast=1.03:brightness=0.01:saturation=1.06:gamma=1.02,"
+        f"colorbalance=rs=-0.01:gs=0.0:bs=0.015:rh=0.015:gh=0.008:bh=-0.01,"
         f"format=yuv420p"
     )
 
@@ -151,9 +152,18 @@ def normalize_scene_worker(args_tuple) -> dict | None:
             "[blurred][sharp]blend=all_expr='if(lte(T,0.5), A*(1-T/0.5)+B*(T/0.5), B)'"
         )
 
-    # Audio chain: Keep 100% original narration/wildlife sound, clean sub-60Hz rumble, crystal clear 48kHz stereo
+    # Audio chain:
+    # Raw clips vary wildly in loudness (e.g., 1.mp4 is -17.2 LUFS while 2.mp4 is -35.4 LUFS — 18dB quieter!).
+    # We apply a clean sub-75Hz rumble cut, gentle FFT spectral denoise (afftdn), and per-scene dynamic leveling (dynaudnorm)
+    # so every scene's bird calls, narration, and natural foliage sounds are balanced and crystal clear at 48kHz Stereo.
     if has_audio:
-        af_chain = "highpass=f=60,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+        af_chain = (
+            "highpass=f=75,"
+            "afftdn=nf=-25,"
+            "dynaudnorm=f=150:g=13:p=0.90:m=10.0,"
+            "aresample=48000,"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo"
+        )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{st:.2f}", "-to", f"{et:.2f}",
@@ -265,7 +275,7 @@ def main():
     parser.add_argument("--manifest", default="scripts/drive_manifest.json")
     parser.add_argument("--resolution", default="3840x2160", help="3840x2160 (4K) or 1920x1080")
     parser.add_argument("--fps", type=int, default=60, help="Target FPS (60)")
-    parser.add_argument("--bgm-volume", type=float, default=0.14, help="Soft ambient pad volume under original audio")
+    parser.add_argument("--bgm-volume", type=float, default=0.08, help="Soft ambient pad volume under original audio")
     parser.add_argument("--output-dir", default="output")
     args = parser.parse_args()
 
