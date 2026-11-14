@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 """
-Discovery Documentary 4K 60fps Master Pipeline (Turbo Single-Pass 4K Architecture)
-Fixes all quality & speed issues:
-1. Video Quality: True 4K UHD (3840x2160) @ 60fps with Lanczos + CAS (Contrast Adaptive Sharpening)
-   + Natural Cinema Color Grading (NO artificial noise/grain filter that degrades sharpness).
+Discovery Documentary 4K 60fps Master Pipeline (Fused 4K60 Xfade + <1.5GB YouTube Bitrate)
+1. Video Quality: True 4K UHD (3840x2160) @ 60fps with Unsharp Micro-Contrast + Cinema Color Grade.
+   Encoded with capped VBR (-crf 22 -maxrate 16M -bufsize 32M) so a 12-minute 4K60 master is ~1.1-1.35 GB
+   (100% compliant with GitHub Releases' 2.0 GB limit and fast web streaming).
 2. Original Audio Preserved 100%: Keeps the original narration & nature audio from each scene,
-   removes <75Hz rumble & >11.5kHz mosquito aliasing, denoises background hiss via FFT (`afftdn`),
+   removes <75Hz rumble & >11.5kHz aliasing, denoises background hiss via FFT (`afftdn`),
    dynamically levels quiet scenes (`-35 LUFS` -> `-16 LUFS`) via `dynaudnorm`, and applies smooth
-   `acrossfade=0.5s` transitions between all scenes.
+   `acrossfade=0.5s` transitions between scenes.
 3. Clean Warm Ambient Music Bed: Pure warm harmonic sine pads (174.61Hz, 261.63Hz, 329.63Hz, 392.00Hz)
    with gentle echo — ZERO pink/white noise hiss ("rồ rồ") — mixed softly at 8% volume under the original audio.
-4. 10x Faster Single-Pass 4K Encoding:
-   - Stage 1: Per-scene AI tail check, audio conditioning, cinema color grading, and 60fps conversion at native HD (`-crf 12 -g 60`).
-   - Stage 2: Parallel 60fps `xfade` (50 transitions) & `acrossfade` assembly in hierarchical batches of 6 -> 4 -> 1 (`-crf 12 -g 60`).
-   - Stage 3: Continuous master audio mix + parallel keyframe-accurate 4K UHD (`3840x2160`) Lanczos+CAS upscale & lossless mux.
 """
 import argparse
 import concurrent.futures
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -75,7 +70,6 @@ def download_single_drive_file(args_tuple) -> Path | None:
 
 
 def probe_clip_duration_and_audio(clip_path: Path) -> tuple[float, bool]:
-    """Uses ffmpeg -i stderr to get duration and check if audio stream exists (no ffprobe dependency needed)."""
     proc = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(clip_path)], capture_output=True, text=True)
     stderr = proc.stderr
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", stderr)
@@ -87,10 +81,6 @@ def probe_clip_duration_and_audio(clip_path: Path) -> tuple[float, bool]:
 
 
 def detect_ai_tail_glitch(clip_path: Path, raw_dur: float) -> tuple[float, float, float]:
-    """
-    Checks if the very end of the AI clip (last 0.4s) has severe frame morphing/blur breakdown.
-    Only trims if an actual anomaly is detected, keeping 97-100% of the clip intact so audio/narration is never cut mid-word.
-    """
     try:
         import cv2
         cap = cv2.VideoCapture(str(clip_path))
@@ -121,20 +111,18 @@ def detect_ai_tail_glitch(clip_path: Path, raw_dur: float) -> tuple[float, float
 
 
 def normalize_scene_worker(args_tuple) -> dict | None:
-    idx, clip_path, graded_dir, fps = args_tuple
+    idx, clip_path, graded_dir = args_tuple
     raw_dur, has_audio = probe_clip_duration_and_audio(clip_path)
     st, et, score = detect_ai_tail_glitch(clip_path, raw_dur)
     dur = max(et - st, 2.0)
 
     dst = graded_dir / f"scene_{idx:03d}.mp4"
 
-    # Stage 1: Perform Cinema Color Grading & Detail Enhancement at native 1280x720 BEFORE duplicating frames to 60fps!
-    # This processes 22.5x fewer pixels during grading/sharpening while preserving 100% visual accuracy.
+    # Stage 1: Native 24fps Cinema Color Grade + Unsharp Detail Enhancement (2.5x faster than grading @ 60fps)
     vf_chain = (
         "scale=1280:720:flags=lanczos,"
-        "unsharp=3:3:0.50:3:3:0.0,"
+        "unsharp=3:3:0.55:3:3:0.0,"
         "eq=contrast=1.03:brightness=0.01:saturation=1.06:gamma=1.02,"
-        f"fps={fps},"
         "format=yuv420p"
     )
 
@@ -190,11 +178,8 @@ def normalize_scene_worker(args_tuple) -> dict | None:
     }
 
 
-def join_batch_with_xfade(batch_items: list[dict], out_path: Path, overlap: float = 0.5, start_t_idx: int = 0, keyint: int = 60) -> float:
-    if len(batch_items) == 1:
-        shutil.copy2(batch_items[0]["path"], out_path)
-        return batch_items[0]["duration"]
-
+def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
+    b_idx, total_batches, batch_items, out_path, overlap, start_t_idx, width, height, fps = args_tuple
     inputs = []
     for item in batch_items:
         inputs.extend(["-i", str(item["path"])])
@@ -202,23 +187,45 @@ def join_batch_with_xfade(batch_items: list[dict], out_path: Path, overlap: floa
     n = len(batch_items)
     v_chains = []
     a_chains = []
-    accumulated_offset = batch_items[0]["duration"]
 
-    for i in range(1, n):
-        offset = max(0.1, accumulated_offset - overlap)
-        trans_name = ALL_XFADE_TRANSITIONS[(start_t_idx + i - 1) % len(ALL_XFADE_TRANSITIONS)]
+    for i in range(n):
+        v_chains.append(f"[{i}:v]fps={fps}[vf{i}]")
 
-        vin_a = "[0:v]" if i == 1 else f"[vx{i-1}]"
-        vin_b = f"[{i}:v]"
-        vout = "[vout]" if i == n - 1 else f"[vx{i}]"
-        v_chains.append(f"{vin_a}{vin_b}xfade=transition={trans_name}:duration={overlap:.3f}:offset={offset:.3f}{vout}")
+    if n == 1:
+        accumulated_offset = batch_items[0]["duration"]
+        v_chains.append(f"[vf0]null[vx_raw]")
+        a_chains.append(f"[0:a]anull[ax_raw]")
+    else:
+        accumulated_offset = batch_items[0]["duration"]
+        for i in range(1, n):
+            offset = max(0.1, accumulated_offset - overlap)
+            trans_name = ALL_XFADE_TRANSITIONS[(start_t_idx + i - 1) % len(ALL_XFADE_TRANSITIONS)]
 
-        ain_a = "[0:a]" if i == 1 else f"[ax{i-1}]"
-        ain_b = f"[{i}:a]"
-        aout = "[aout]" if i == n - 1 else f"[ax{i}]"
-        a_chains.append(f"{ain_a}{ain_b}acrossfade=d={overlap:.3f}:c1=tri:c2=tri{aout}")
+            vin_a = "[vf0]" if i == 1 else f"[vx{i-1}]"
+            vin_b = f"[vf{i}]"
+            vout = "[vx_raw]" if i == n - 1 else f"[vx{i}]"
+            v_chains.append(f"{vin_a}{vin_b}xfade=transition={trans_name}:duration={overlap:.3f}:offset={offset:.3f}{vout}")
 
-        accumulated_offset = offset + batch_items[i]["duration"]
+            ain_a = "[0:a]" if i == 1 else f"[ax{i-1}]"
+            ain_b = f"[{i}:a]"
+            aout = "[ax_raw]" if i == n - 1 else f"[ax{i}]"
+            a_chains.append(f"{ain_a}{ain_b}acrossfade=d={overlap:.3f}:c1=tri:c2=tri{aout}")
+
+            accumulated_offset = offset + batch_items[i]["duration"]
+
+    # Smooth 0.20s micro-fade at inter-batch boundaries (equivalent to fadeblack transition) + True 4K upscale
+    fade_out_st = max(0.1, accumulated_offset - 0.22)
+    v_post = f"scale={width}:{height}:flags=bicubic,format=yuv420p"
+    a_post = "anull"
+    if b_idx > 0:
+        v_post += ",fade=t=in:st=0:d=0.20"
+        a_post += ",afade=t=in:st=0:d=0.20"
+    if b_idx < total_batches - 1:
+        v_post += f",fade=t=out:st={fade_out_st:.2f}:d=0.20"
+        a_post += f",afade=t=out:st={fade_out_st:.2f}:d=0.20"
+
+    v_chains.append(f"[vx_raw]{v_post}[vout]")
+    a_chains.append(f"[ax_raw]{a_post}[aout]")
 
     filter_complex = ";".join(v_chains + a_chains)
     cmd = [
@@ -226,39 +233,22 @@ def join_batch_with_xfade(batch_items: list[dict], out_path: Path, overlap: floa
         *inputs,
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "12",
-        "-g", str(keyint), "-keyint_min", str(keyint), "-sc_threshold", "0",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+        "-maxrate", "16M", "-bufsize", "32M",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
+        "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
+        "-threads", "2",
         str(out_path)
     ]
     subprocess.run(cmd, check=True)
     actual_dur, _ = probe_clip_duration_and_audio(out_path)
-    return actual_dur
-
-
-def upscale_segment_worker(args_tuple) -> Path:
-    seg_idx, seg_path, seg_out_dir, width, height = args_tuple
-    out_seg = seg_out_dir / f"up_{seg_idx:03d}.mp4"
-    vf_up = f"scale={width}:{height}:flags=bicubic,format=yuv420p"
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(seg_path),
-        "-vf", vf_up,
-        "-an",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16",
-        "-threads", "2",
-        str(out_seg)
-    ]
-    subprocess.run(cmd, check=True)
-    return out_seg
+    return b_idx, out_path, actual_dur
 
 
 def generate_pure_ambient_bgm(out_m4a: Path):
     """
     Pure warm harmonic sine pad (NO pink noise / NO static hiss 'rồ rồ'!).
     Soft C-major / F-maj7 warm chords (174.61Hz, 261.63Hz, 329.63Hz, 392.00Hz) with gentle reverb.
-    Note: FFmpeg tremolo filter requires f in [0.1, 20000.0].
     """
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -281,7 +271,7 @@ def generate_pure_ambient_bgm(out_m4a: Path):
 
 def main():
     t0 = time.time()
-    parser = argparse.ArgumentParser(description="Discovery 4K 60fps Master Pipeline (Turbo Single-Pass 4K)")
+    parser = argparse.ArgumentParser(description="Discovery 4K 60fps Master Pipeline (Fused 4K60 Xfade)")
     parser.add_argument("--project-key", required=True)
     parser.add_argument("--manifest", default="scripts/drive_manifest.json")
     parser.add_argument("--resolution", default="3840x2160", help="3840x2160 (4K) or 1920x1080")
@@ -302,9 +292,7 @@ def main():
     raw_dir = Path("work_raw")
     graded_dir = Path("work_graded")
     batch_dir = Path("work_batches")
-    seg_dir = Path("work_segments")
-    up_dir = Path("work_upscaled")
-    for d in (raw_dir, graded_dir, batch_dir, seg_dir, up_dir):
+    for d in (raw_dir, graded_dir, batch_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     print(f"📥 [1/4] Downloading {len(sorted_items)} scenes for '{args.project_key}'...", flush=True)
@@ -318,8 +306,8 @@ def main():
     print(f"   ✔️ Downloaded {len(downloaded)} scenes in {time.time() - t0:.1f}s", flush=True)
 
     t1 = time.time()
-    print(f"🎬 [2/4] Conditioning Audio (Denoise + Dynamic Leveling) & Grading {len(downloaded)} scenes @ {args.fps}fps...", flush=True)
-    norm_tasks = [(idx, p, graded_dir, args.fps) for idx, p in enumerate(downloaded, 1)]
+    print(f"🎬 [2/4] Conditioning Audio (Denoise + Dynamic Leveling) & Grading {len(downloaded)} scenes...", flush=True)
+    norm_tasks = [(idx, p, graded_dir) for idx, p in enumerate(downloaded, 1)]
     norm_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         for res in pool.map(normalize_scene_worker, norm_tasks):
@@ -329,32 +317,48 @@ def main():
     print(f"   ✔️ Conditioned {len(norm_results)} scenes in {time.time() - t1:.1f}s", flush=True)
 
     t2 = time.time()
-    print(f"🎞️ [3/4] Applying 0.5s Xfade Video & Acrossfade Audio Transitions across all {len(norm_results)} scenes...", flush=True)
-    BATCH_SIZE = 9
-    l1_futures = []
-    l1_batches = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        for b_idx, start_i in enumerate(range(0, len(norm_results), BATCH_SIZE)):
-            chunk = norm_results[start_i:start_i + BATCH_SIZE]
-            b_out = batch_dir / f"l1_batch_{b_idx+1:02d}.mp4"
-            fut = pool.submit(join_batch_with_xfade, chunk, b_out, 0.5, start_i, args.fps)
-            l1_futures.append((b_idx, b_out, fut))
-        for b_idx, b_out, fut in l1_futures:
-            b_dur = fut.result()
-            l1_batches.append({"path": b_out, "duration": b_dur})
-            print(f"   ✔️ Batch {b_idx+1}/{len(l1_futures)} complete ({b_dur:.2f}s)", flush=True)
+    BATCH_SIZE = 6
+    chunks = [norm_results[i:i + BATCH_SIZE] for i in range(0, len(norm_results), BATCH_SIZE)]
+    total_batches = len(chunks)
+    print(f"🎞️ [3/4] Fused 0.5s Xfade + Upscaling {total_batches} batches directly to {width}x{height} @ {args.fps}fps...", flush=True)
 
-    merged_scenes = out_dir / "merged_hd60.mp4"
-    total_dur = join_batch_with_xfade(l1_batches, merged_scenes, overlap=0.5, start_t_idx=len(norm_results) + 10, keyint=args.fps)
-    print(f"   ✔️ All {len(norm_results)} scenes & 0.5s transitions assembled ({total_dur:.2f}s) in {time.time() - t2:.1f}s", flush=True)
+    batch_tasks = []
+    for b_idx, chunk in enumerate(chunks):
+        b_out = batch_dir / f"batch_4k60_{b_idx:03d}.mp4"
+        batch_tasks.append((b_idx, total_batches, chunk, b_out, 0.5, b_idx * BATCH_SIZE, width, height, args.fps))
+
+    rendered_batches = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        for b_idx, b_out, b_dur in pool.map(render_4k60_batch_worker, batch_tasks):
+            rendered_batches.append((b_idx, b_out, b_dur))
+            print(f"   ✔️ 4K60 Batch {b_idx+1}/{total_batches} complete ({b_dur:.2f}s)", flush=True)
+
+    rendered_batches.sort(key=lambda x: x[0])
+    total_dur = sum(x[2] for x in rendered_batches)
+    concat_list = batch_dir / "concat_list.txt"
+    concat_list.write_text(
+        "\n".join(f"file '{x[1].resolve().as_posix()}'" for x in rendered_batches) + "\n",
+        encoding="utf-8"
+    )
+
+    merged_4k = out_dir / "merged_4k60_nobgm.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", str(concat_list),
+        "-c", "copy",
+        str(merged_4k)
+    ], check=True)
+    print(f"   ✔️ Assembled 4K60 timeline ({total_dur:.2f}s) in {time.time() - t2:.1f}s", flush=True)
 
     t3 = time.time()
-    print(f"🎵 [4/4] Mixing Continuous Master Audio & Parallel Upscaling to {width}x{height} @ {args.fps}fps...", flush=True)
+    print(f"🎵 [4/4] Mixing Continuous Master Audio + Pure Warm Harmonic Pad ({int(args.bgm_volume*100)}%, NO noise hiss)...", flush=True)
     bgm_file = out_dir / "pure_bgm.m4a"
     generate_pure_ambient_bgm(bgm_file)
 
-    master_audio = out_dir / "master_audio.m4a"
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", args.project_key).strip("_")
+    final_output = out_dir / f"{safe_name}_4K60FPS_Master.mp4"
     fade_out_st = max(0.0, total_dur - 3.5)
+
     bgm_filter = (
         f"[0:a]volume=1.0[orig_a];"
         f"[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
@@ -363,62 +367,22 @@ def main():
     )
     subprocess.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(merged_scenes),
+        "-i", str(merged_4k),
         "-stream_loop", "-1", "-i", str(bgm_file),
         "-filter_complex", bgm_filter,
-        "-map", "[final_a]",
+        "-map", "0:v:0", "-map", "[final_a]",
+        "-c:v", "copy",
         "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
-        "-t", f"{total_dur:.2f}",
-        str(master_audio)
-    ], check=True)
-
-    # Split merged_hd60.mp4 at exact keyframe boundaries (-c copy) into ~35s chunks for parallel 4K Lanczos+CAS upscale
-    seg_pattern = str(seg_dir / "seg_%03d.mp4")
-    subprocess.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(merged_scenes),
-        "-an", "-c:v", "copy",
-        "-f", "segment", "-segment_time", "35", "-reset_timestamps", "1",
-        seg_pattern
-    ], check=True)
-
-    segments = sorted(seg_dir.glob("seg_*.mp4"))
-    print(f"   🚀 Upscaling {len(segments)} segments in parallel to {width}x{height} @ {args.fps}fps (Lanczos + CAS)...", flush=True)
-    up_tasks = [(idx, seg_p, up_dir, width, height) for idx, seg_p in enumerate(segments)]
-    upscaled_Dynamic = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        for res in pool.map(upscale_segment_worker, up_tasks):
-            upscaled_Dynamic.append(res)
-            print(f"   ✔️ Upscaled segment {len(upscaled_Dynamic)}/{len(segments)}", flush=True)
-
-    upscaled_Dynamic.sort(key=lambda p: p.name)
-    concat_list = up_dir / "concat_list.txt"
-    concat_list.write_text(
-        "\n".join(f"file '{p.resolve().as_posix()}'" for p in upscaled_Dynamic) + "\n",
-        encoding="utf-8"
-    )
-
-    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", args.project_key).strip("_")
-    final_output = out_dir / f"{safe_name}_4K60FPS_Master.mp4"
-
-    subprocess.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", str(concat_list),
-        "-i", str(master_audio),
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "copy", "-c:a", "copy",
         "-movflags", "+faststart",
+        "-shortest",
         str(final_output)
     ], check=True)
 
     shutil.rmtree(raw_dir, ignore_errors=True)
     shutil.rmtree(graded_dir, ignore_errors=True)
     shutil.rmtree(batch_dir, ignore_errors=True)
-    shutil.rmtree(seg_dir, ignore_errors=True)
-    shutil.rmtree(up_dir, ignore_errors=True)
-    merged_scenes.unlink(missing_ok=True)
+    merged_4k.unlink(missing_ok=True)
     bgm_file.unlink(missing_ok=True)
-    master_audio.unlink(missing_ok=True)
 
     size_mb = final_output.stat().st_size / (1024 * 1024)
     print(f"🎉 MASTER 4K60FPS COMPLETE in {(time.time() - t0)/60:.1f} mins: {final_output} ({size_mb:.1f} MB | {total_dur/60:.2f} mins)", flush=True)
