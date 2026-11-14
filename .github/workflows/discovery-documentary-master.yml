@@ -1,15 +1,15 @@
-name: 🎯 Single Video 4K 60fps Master QA (Original Audio + 0.5s Xfade + Clean BGM)
+name: 🚀 Parallel 30-Video 4K 60fps Autonomous QA & Cloud Master Pipeline
 
 on:
   workflow_dispatch:
     inputs:
-      project_key:
-        description: 'Chọn 1 Bộ Phim để xuất chuẩn 4K 60fps & Kiểm tra Âm thanh trước'
+      project_filter:
+        description: 'Nhập ALL để chạy đa luồng toàn bộ 30 phim 4K 60fps, hoặc tên 1 phim'
         required: true
-        default: 'Baya_Weaver_Hanging_Pendulum_Nest_12min'
+        default: 'ALL'
         type: string
       resolution:
-        description: 'Độ phân giải xuất ra'
+        description: 'Độ phân giải xuất bản'
         required: true
         default: '3840x2160'
         type: choice
@@ -18,7 +18,7 @@ on:
           - '2560x1440'
           - '1920x1080'
       fps:
-        description: 'Số khung hình/giây (FPS)'
+        description: 'Tốc độ khung hình (FPS)'
         required: true
         default: '60'
         type: choice
@@ -26,45 +26,101 @@ on:
           - '60'
           - '30'
       bgm_volume:
-        description: 'Âm lượng nhạc nền Ambient ấm dưới giọng đọc gốc (0.0 = tắt hẳn nhạc nền, 0.14 = dịu nhẹ)'
+        description: 'Âm lượng nhạc nền Ambient ấm dưới giọng gốc (0.08 = 8%)'
         required: false
-        default: '0.14'
+        default: '0.08'
         type: string
 
 jobs:
-  render-4k60-single-qa:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🧩 Build Parallel 30-Documentary Matrix
+        id: set-matrix
+        run: |
+          python3 - << 'EOF'
+          import json, os
+          from pathlib import Path
+          manifest = json.loads(Path("scripts/drive_manifest.json").read_text(encoding="utf-8-sig"))
+          pf = "${{ inputs.project_filter }}".strip()
+          if not pf or pf.upper() == "ALL":
+              keys = list(manifest.keys())
+          else:
+              keys = [k for k in manifest.keys() if pf.lower() in k.lower()]
+          print(f"Selected {len(keys)} projects for parallel 4K60 rendering.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"matrix={json.dumps(keys)}\n")
+          EOF
+
+      - name: 🌐 Ensure Release `discovery-4k60-masters` Exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="discovery-4k60-masters"
+          gh release view "$TAG" || gh release create "$TAG" \
+            --title "🌍 30 Discovery Documentaries — 4K 60fps UHD Master Collection (-14 LUFS)" \
+            --notes "Autonomous 4K 60fps (3840x2160 @ 60fps) Discovery Documentary Masters with AI Corner-Watermark Removal (delogo), Adaptive Exposure/Gamma Grading, Broadcast Audio Leveling (-14 LUFS), 0.5s Xfade Transitions, and YouTube SEO Metadata."
+
+  parallel-4k60-render:
+    needs: prepare-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        project: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
       - name: 📥 Checkout Cloud Video Studio
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python 3.12 & FFmpeg
+      - name: 🐍 Setup Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: 📦 Install OpenCV, gdown & FFmpeg
+      - name: 📦 Install FFmpeg, OpenCV, gdown & rclone
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
+          sudo apt-get install -y -qq ffmpeg rclone
           pip install -q --upgrade pip
           pip install -q gdown opencv-python-headless numpy
 
-      - name: 🎬 Render 1 Video 4K 60fps Master (Keep Original Audio + 0.5s Xfade + Clean BGM)
+      - name: 🎬 Auto-QA, Self-Adjust & Render 4K 60fps Master (${{ matrix.project }})
         run: |
           python scripts/discovery_master_pipeline.py \
-            --project-key "${{ inputs.project_key }}" \
+            --project-key "${{ matrix.project }}" \
             --resolution "${{ inputs.resolution }}" \
             --fps "${{ inputs.fps }}" \
             --bgm-volume "${{ inputs.bgm_volume }}" \
             --output-dir "output"
 
-      - name: 🌐 Publish to GitHub Release `discovery-4k60-qa` for Instant Web Preview
+      - name: ☁️ Auto-Sync to Google Drive (if RCLONE_CONFIG_BASE64 is configured)
+        env:
+          RCLONE_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          DRIVE_FOLDER_ID: '1wZmfSYFBWDwhydvtFGR9eK-GKspjvJlz'
+        run: |
+          if [ -n "$RCLONE_B64" ]; then
+            mkdir -p ~/.config/rclone
+            echo "$RCLONE_B64" | base64 -d > ~/.config/rclone/rclone.conf
+            rclone copy output/ gdrive:Rendered_4K60_Discovery_Masters --drive-root-folder-id "$DRIVE_FOLDER_ID" -P
+          else
+            echo "Publishing directly to GitHub Cloud Release discovery-4k60-masters & Colab Auto-Drive Sync."
+          fi
+
+      - name: 🌐 Publish 4K 60fps Master + QA Report + SEO to Release `discovery-4k60-masters`
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="discovery-4k60-qa"
-          gh release view "$TAG" || gh release create "$TAG" --title "🎯 4K 60fps Master QA Preview (Original Audio + Clean BGM)" --notes "Single video 4K 60fps QA release with 100% original narration/audio preserved, 0.5s xfade transitions, and zero pink-noise hiss."
-          gh release upload "$TAG" output/*.mp4 --clobber
+          TAG="discovery-4k60-masters"
+          for attempt in 1 2 3 4 5; do
+            gh release upload "$TAG" output/*.mp4 output/*.json --clobber && break
+            echo "Retry $attempt uploading to release..."
+            sleep $((attempt * 4))
+          done
