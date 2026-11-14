@@ -230,7 +230,7 @@ def main():
     parser.add_argument("--output-dir", default="output", help="Output folder")
     args = parser.parse_args()
 
-    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8-sig"))
     if args.project_key not in manifest:
         raise KeyError(f"Project '{args.project_key}' not found in manifest.")
 
