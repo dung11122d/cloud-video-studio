@@ -57,21 +57,46 @@ def download_single_drive_file(args_tuple) -> Path | None:
     if out_path.exists() and out_path.stat().st_size > 50_000:
         return out_path
 
-    url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            data = resp.read()
-            if len(data) > 50_000 and not data[:15].startswith(b"<!DOCTYPE html"):
-                out_path.write_bytes(data)
-                return out_path
-    except Exception:
-        pass
+    # 1. Fast direct download attempt
+    for url in (
+        f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t",
+        f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t",
+    ):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+                if len(data) > 50_000 and not data[:20].lstrip().startswith((b"<!DOCTYPE", b"<html")):
+                    out_path.write_bytes(data)
+                    return out_path
+        except Exception:
+            pass
 
+    # 2. Quota-proof yt-dlp Google Drive video streaming CDN fallback (downloads 1280x720 f136 + f140 audio even when /uc is quota-blocked!)
+    for attempt in range(3):
+        try:
+            view_url = f"https://drive.google.com/file/d/{file_id}/view"
+            subprocess.run(
+                [
+                    sys.executable, "-m", "yt_dlp",
+                    "--no-check-certificates", "--quiet", "--no-warnings",
+                    "-f", "bestvideo+bestaudio/best",
+                    "--merge-output-format", "mp4",
+                    view_url,
+                    "-o", str(out_path)
+                ],
+                check=False, timeout=90
+            )
+            if out_path.exists() and out_path.stat().st_size > 50_000:
+                return out_path
+        except Exception:
+            time.sleep(2 * (attempt + 1))
+
+    # 3. gdown fallback
     try:
         subprocess.run(
             [sys.executable, "-m", "gdown", "--no-check-certificate", "-q", file_id, "-O", str(out_path)],
-            check=False, timeout=90
+            check=False, timeout=60
         )
         if out_path.exists() and out_path.stat().st_size > 50_000:
             return out_path
@@ -513,12 +538,14 @@ def main():
     print(f"📥 [1/5] Downloading {len(sorted_items)} scenes for '{args.project_key}'...", flush=True)
     dl_tasks = [(name, fid, raw_dir) for name, fid in sorted_items]
     downloaded = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         for res in pool.map(download_single_drive_file, dl_tasks):
             if res is not None:
                 downloaded.append(res)
     downloaded.sort(key=lambda p: natural_scene_num(p.name))
-    print(f"   ✔️ Downloaded {len(downloaded)} scenes in {time.time() - t0:.1f}s", flush=True)
+    print(f"   ✔️ Downloaded {len(downloaded)}/{len(sorted_items)} scenes in {time.time() - t0:.1f}s", flush=True)
+    if len(downloaded) < max(1, int(len(sorted_items) * 0.85)):
+        raise RuntimeError(f"Incomplete download: only {len(downloaded)}/{len(sorted_items)} scenes retrieved.")
 
     t1 = time.time()
     print(f"🔍 [2/5] Auto-Checking & Self-Calibrating Audio/Exposure/Delogo across {len(downloaded)} scenes...", flush=True)
