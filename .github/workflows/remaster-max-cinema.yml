@@ -23,14 +23,31 @@ jobs:
         run: |
           python3 - << 'EOF'
           import json, os, urllib.request
+          from collections import defaultdict
+          import re
           req = urllib.request.Request("https://api.github.com/repos/dung11122d/cloud-video-studio/releases/tags/discovery-4k60-masters", headers={"User-Agent": "Mozilla/5.0"})
           with urllib.request.urlopen(req) as resp:
               assets = json.loads(resp.read().decode("utf-8")).get("assets", [])
           mp4s = [a["name"] for a in assets if a["name"].endswith("_4K60FPS_Master.mp4")]
+
+          # Skip videos already fully uploaded (>2800MB) in discovery-4k60-max-cinema
+          done_sizes = defaultdict(int)
+          try:
+              req2 = urllib.request.Request("https://api.github.com/repos/dung11122d/cloud-video-studio/releases/tags/discovery-4k60-max-cinema", headers={"User-Agent": "Mozilla/5.0"})
+              with urllib.request.urlopen(req2) as resp2:
+                  for a in json.loads(resp2.read().decode("utf-8")).get("assets", []):
+                      if ".mp4" in a["name"]:
+                          base = re.sub(r"\.part\d+$", "", a["name"])
+                          done_sizes[base] += a["size"]
+          except Exception:
+              pass
+
           pf = "${{ inputs.project_filter }}".strip()
-          if pf and pf.upper() != "ALL":
+          if not pf or pf.upper() == "ALL":
+              mp4s = [m for m in mp4s if done_sizes.get(m, 0) < 2800 * 1024 * 1024]
+          else:
               mp4s = [m for m in mp4s if pf.lower() in m.lower()]
-          print(f"Found {len(mp4s)} 4K60 masters to remaster to MAX CINEMA 45Mbps.")
+          print(f"Found {len(mp4s)} remaining 4K60 masters to remaster to MAX CINEMA 45Mbps.")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"matrix={json.dumps(mp4s)}\n")
           EOF
@@ -47,10 +64,10 @@ jobs:
   remaster-max-cinema:
     needs: prepare-matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 300
     strategy:
       fail-fast: false
-      max-parallel: 15
+      max-parallel: 20
       matrix:
         mp4_name: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
@@ -79,8 +96,8 @@ jobs:
         run: |
           ffmpeg -y -hide_banner -loglevel error \
             -i "input/$MP4_NAME" \
-            -vf "hqdn3d=1.0:0.8:2.0:1.5,cas=strength=0.50,unsharp=5:5:0.65:3:3:0.20,eq=contrast=1.03:saturation=1.05,format=yuv420p" \
-            -c:v libx264 -preset veryfast -profile:v high -level:v 5.2 \
+            -vf "hqdn3d=1.0:0.8:2.0:1.5,cas=strength=0.55,unsharp=3:3:0.55:3:3:0.0,eq=contrast=1.03:saturation=1.05,format=yuv420p" \
+            -c:v libx264 -preset superfast -profile:v high -level:v 5.2 \
             -crf 15 -maxrate 45M -bufsize 90M \
             -c:a copy \
             -movflags +faststart \
