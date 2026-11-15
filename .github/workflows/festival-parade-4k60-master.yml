@@ -7,6 +7,10 @@ on:
         description: "all or comma-separated project indices (1-8)"
         required: false
         default: "all"
+      gdrive_token:
+        description: "Optional Google Drive OAuth Bearer Token to bypass anonymous quota"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -68,8 +72,10 @@ jobs:
               --notes "8 Grand Festival & Parade 30-Minute 4K 60fps MAX CINEMA Remasters (3840x2160 @ 60fps, CRF 15, Maxrate 45 Mbps, Lanczos + CAS, 48kHz Spatial Stereo + Culturally Matched Festive Harmonic Bed)."
 
       - name: Run 4K 60fps MAX CINEMA Parade Pipeline
+        env:
+          GDRIVE_ACCESS_TOKEN: ${{ github.event.inputs.gdrive_token }}
         run: |
-          python3 scripts/festival_parade_master_pipeline.py ${{ matrix.project_idx }}
+          python3 -u scripts/festival_parade_master_pipeline.py ${{ matrix.project_idx }}
 
       - name: Direct Cloud Sync to Google Drive (If Rclone Configured) & Upload to GitHub Release
         env:
