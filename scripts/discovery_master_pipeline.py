@@ -58,6 +58,22 @@ def download_single_drive_file(args_tuple) -> Path | None:
     if out_path.exists() and out_path.stat().st_size > 50_000:
         return out_path
 
+    # 0. Authenticated rclone backend (100% immune to anonymous Google Drive quota limits!)
+    rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
+    if rclone_conf.exists() and rclone_conf.stat().st_size > 20:
+        try:
+            subprocess.run(
+                [
+                    "rclone", "backend", "copyid", "gdrive:", file_id,
+                    str(out_path)
+                ],
+                check=False, timeout=60, capture_output=True
+            )
+            if out_path.exists() and out_path.stat().st_size > 50_000:
+                return out_path
+        except Exception:
+            pass
+
     # 1. Fast direct download attempt
     for url in (
         f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t",
