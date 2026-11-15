@@ -100,6 +100,16 @@ jobs:
           pip install -q --upgrade pip
           pip install -q gdown yt-dlp opencv-python-headless numpy
 
+      - name: 🔑 Configure Google Drive Rclone Auth (for Zero-Quota Download & Direct Upload)
+        env:
+          RCLONE_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+        run: |
+          if [ -n "$RCLONE_B64" ]; then
+            mkdir -p ~/.config/rclone
+            echo "$RCLONE_B64" | base64 -d > ~/.config/rclone/rclone.conf
+            echo "✅ Rclone Google Drive OAuth configured!"
+          fi
+
       - name: 🎬 Auto-QA, Self-Adjust & Render 4K 60fps Master (${{ matrix.project }})
         env:
           MAX_BITRATE_MBPS: ${{ inputs.quality_mode == 'STANDARD_22MBPS' && '22' || '45' }}
