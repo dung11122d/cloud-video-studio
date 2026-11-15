@@ -1,0 +1,107 @@
+name: Festival & Parade 4K 60fps MAX CINEMA Pipeline (8 Grand Projects)
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "all or comma-separated project indices (1-8)"
+        required: false
+        default: "all"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Build Matrix (8 Parade Projects)
+        id: set-matrix
+        run: |
+          python3 - << 'EOF'
+          import os, json
+          batch = "${{ github.event.inputs.batch }}" or "all"
+          if batch.strip().lower() == "all":
+              indices = list(range(1, 9))
+          else:
+              indices = [int(x.strip()) for x in batch.split(",") if x.strip().isdigit()]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={json.dumps(indices)}\n")
+          EOF
+
+  render-parade-4k60:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        project_idx: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Free 35GB+ Runner SSD Space for 30-Min 4K60 Masters
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg, Python OpenCV & Download Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg rclone
+          pip install --upgrade pip
+          pip install opencv-python-headless numpy gdown yt-dlp
+
+      - name: Ensure GitHub Release Exists (parade-4k60-max-cinema)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view parade-4k60-max-cinema >/dev/null 2>&1 || \
+            gh release create parade-4k60-max-cinema \
+              --title "Grand Festival & Parade 4K 60fps MAX CINEMA Masters (45 Mbps + Spatial Stereo + Cultural Music)" \
+              --notes "8 Grand Festival & Parade 30-Minute 4K 60fps MAX CINEMA Remasters (3840x2160 @ 60fps, CRF 15, Maxrate 45 Mbps, Lanczos + CAS, 48kHz Spatial Stereo + Culturally Matched Festive Harmonic Bed)."
+
+      - name: Run 4K 60fps MAX CINEMA Parade Pipeline
+        run: |
+          python3 scripts/festival_parade_master_pipeline.py ${{ matrix.project_idx }}
+
+      - name: Direct Cloud Sync to Google Drive (If Rclone Configured) & Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
+        run: |
+          set -e
+          IDX="${{ matrix.project_idx }}"
+          if [ "$IDX" -le 6 ]; then
+            DRIVE_ID="1RH5Ep5PjAK5G_ZfywDfkssttD_rRQjQ3"
+          else
+            DRIVE_ID="1DsS5dXrzw1eNHVl6CXDhlA_PUqTcEQji"
+          fi
+
+          if [ -n "$GDRIVE_RCLONE_CONF" ]; then
+            mkdir -p ~/.config/rclone
+            echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
+            for f in output_parade/*; do
+              rclone copy "$f" "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" --drive-chunk-size 64M -P || true
+            done
+          fi
+
+          # Split any >1900MB 4K60 MAX CINEMA MP4 into lossless 1.9GB parts for GitHub Release
+          for mp4 in output_parade/*.mp4; do
+            [ -e "$mp4" ] || continue
+            size_mb=$(du -m "$mp4" | cut -f1)
+            if [ "$size_mb" -gt 1900 ]; then
+              echo "Splitting $mp4 (${size_mb} MB) into 1900M parts..."
+              split -b 1900M -d "$mp4" "${mp4}.part"
+              rm -f "$mp4"
+            fi
+          done
+
+          ls -lh output_parade/
+          gh release upload parade-4k60-max-cinema output_parade/* --clobber
