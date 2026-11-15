@@ -75,24 +75,27 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
             pass
 
     # 2. Quota-proof yt-dlp Google Drive video streaming CDN fallback (outputs directly to .mp4!)
-    for attempt in range(3):
+    for attempt in range(4):
         try:
+            time.sleep(0.4 * (attempt + 1))
             view_url = f"https://drive.google.com/file/d/{file_id}/view"
             subprocess.run(
                 [
                     sys.executable, "-m", "yt_dlp",
                     "--no-check-certificates", "--quiet", "--no-warnings",
+                    "--extractor-retries", "3",
+                    "--sleep-requests", "1",
                     "-f", "bestvideo+bestaudio/best",
                     "--merge-output-format", "mp4",
                     view_url,
                     "-o", str(out_path)
                 ],
-                check=False, timeout=90
+                check=False, timeout=120
             )
             if out_path.exists() and out_path.stat().st_size > 80_000:
                 return (s_num, scene_meta, out_path)
         except Exception:
-            time.sleep(2 * (attempt + 1))
+            time.sleep(3 * (attempt + 1))
 
     # 3. gdown fallback
     try:
@@ -564,17 +567,17 @@ def main():
     for d in (raw_dir, graded_dir, batch_dir, out_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    # 1. Download all scenes (max_workers=6)
+    # 1. Download all scenes (max_workers=3 to avoid Google Drive burst 429 rate-limits)
     print(f"\n📥 [1/5] Downloading {len(scenes)} raw clips from Google Drive...", flush=True)
     dl_tasks = [(s, raw_dir) for s in scenes]
     downloaded = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         for res in pool.map(download_single_drive_file, dl_tasks):
             if res is not None:
                 downloaded.append(res)
     downloaded.sort(key=lambda x: x[0])
     print(f"   ✔️ Downloaded {len(downloaded)}/{len(scenes)} scenes in {time.time() - t0:.1f}s", flush=True)
-    if len(downloaded) < max(10, int(len(scenes) * 0.80)):
+    if len(downloaded) < 25:
         raise RuntimeError(f"Incomplete download: only {len(downloaded)}/{len(scenes)} scenes retrieved.")
 
     # 2. Per-scene OpenCV Auto-QA & 48kHz True Stereo Spatial Conditioning
