@@ -15,15 +15,17 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
       - name: 🧩 Get All 30 MP4 Assets from `discovery-4k60-masters`
         id: set-matrix
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - << 'EOF'
-          import json, os, subprocess
-          out = subprocess.check_output(["gh", "release", "view", "discovery-4k60-masters", "--json", "assets"], text=True)
-          assets = json.loads(out).get("assets", [])
+          import json, os, urllib.request
+          req = urllib.request.Request("https://api.github.com/repos/dung11122d/cloud-video-studio/releases/tags/discovery-4k60-masters", headers={"User-Agent": "Mozilla/5.0"})
+          with urllib.request.urlopen(req) as resp:
+              assets = json.loads(resp.read().decode("utf-8")).get("assets", [])
           mp4s = [a["name"] for a in assets if a["name"].endswith("_4K60FPS_Master.mp4")]
           pf = "${{ inputs.project_filter }}".strip()
           if pf and pf.upper() != "ALL":
@@ -38,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="discovery-4k60-max-cinema"
-          gh release view "$TAG" || gh release create "$TAG" \
+          gh release view "$TAG" --repo "${{ github.repository }}" || gh release create "$TAG" --repo "${{ github.repository }}" \
             --title "💎 30 Discovery Documentaries — 4K 60fps MAX CINEMA 45Mbps (CRF 15 + Lanczos + CAS)" \
             --notes "Ultra-High-Bitrate 4K 60fps (3840x2160 @ 60fps, CRF 15, Maxrate 45 Mbps, CAS + Unsharp Cinema Sharpening, -14 LUFS Broadcast Audio) Masters."
 
@@ -53,6 +55,9 @@ jobs:
         mp4_name: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
       - name: 📦 Install FFmpeg & rclone
         run: |
           sudo apt-get update -qq
@@ -64,9 +69,9 @@ jobs:
           MP4_NAME: ${{ matrix.mp4_name }}
         run: |
           mkdir -p input output
-          gh release download "discovery-4k60-masters" -p "$MP4_NAME" -D input --clobber
+          gh release download "discovery-4k60-masters" --repo "${{ github.repository }}" -p "$MP4_NAME" -D input --clobber
           BASE="${MP4_NAME%_4K60FPS_Master.mp4}"
-          gh release download "discovery-4k60-masters" -p "${BASE}_SEO_meta.json" -p "${BASE}_QA_Report.json" -D output --clobber || true
+          gh release download "discovery-4k60-masters" --repo "${{ github.repository }}" -p "${BASE}_SEO_meta.json" -p "${BASE}_QA_Report.json" -D output --clobber || true
 
       - name: 💎 Cinema Optical Remaster (CAS Sharpening + 3D Denoise + 45 Mbps High@L5.2 CRF 15)
         env:
@@ -108,6 +113,6 @@ jobs:
             rm -f "$mp4"
           fi
           for attempt in 1 2 3 4 5; do
-            gh release upload "$TAG" output/* --clobber && break
+            gh release upload "$TAG" --repo "${{ github.repository }}" output/* --clobber && break
             sleep $((attempt * 4))
           done
