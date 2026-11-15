@@ -46,7 +46,21 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
     if out_path.exists() and out_path.stat().st_size > 80_000:
         return (s_num, scene_meta, out_path)
 
-    # 0. Optional rclone backend copyid
+    # 0a. Authenticated Google Drive API v3 Bearer Token (100% immune to anonymous quota!)
+    gdrive_token = os.environ.get("GDRIVE_ACCESS_TOKEN", "").strip()
+    if gdrive_token:
+        try:
+            api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
+            req = urllib.request.Request(api_url, headers={"Authorization": f"Bearer {gdrive_token}"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+                if len(data) > 80_000:
+                    out_path.write_bytes(data)
+                    return (s_num, scene_meta, out_path)
+        except Exception:
+            pass
+
+    # 0b. Optional rclone backend copyid
     rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
     if rclone_conf.exists() and rclone_conf.stat().st_size > 20:
         try:
@@ -361,7 +375,7 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
             accumulated_offset = offset + batch_items[i]["duration"]
 
     fade_out_st = max(0.1, accumulated_offset - 0.22)
-    v_post = "scale=3840:2160:flags=lanczos,cas=strength=0.50,unsharp=3:3:0.50:3:3:0.0,format=yuv420p"
+    v_post = "scale=3840:2160:flags=lanczos,unsharp=3:3:0.50:3:3:0.0,format=yuv420p"
     a_post = "anull"
     if b_idx > 0:
         v_post += ",fade=t=in:st=0:d=0.20"
@@ -374,18 +388,30 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
     a_chains.append(f"[ax_raw]{a_post}[aout]")
 
     filter_complex = ";".join(v_chains + a_chains)
+    use_nvenc = os.environ.get("USE_NVENC", "0") == "1"
+    if use_nvenc:
+        v_enc = [
+            "-c:v", "h264_nvenc", "-preset", "p4",
+            "-rc", "vbr", "-cq", "15",
+            "-maxrate", "45M", "-bufsize", "90M",
+            "-pix_fmt", "yuv420p"
+        ]
+    else:
+        v_enc = [
+            "-c:v", "libx264", "-preset", "superfast",
+            "-profile:v", "high", "-level:v", "5.2",
+            "-crf", "15",
+            "-maxrate", "45M", "-bufsize", "90M",
+            "-pix_fmt", "yuv420p",
+            "-threads", "2"
+        ]
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         *inputs,
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "superfast",
-        "-profile:v", "high", "-level:v", "5.2",
-        "-crf", "15",
-        "-maxrate", "45M", "-bufsize", "90M",
-        "-pix_fmt", "yuv420p",
+        *v_enc,
         "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
-        "-threads", "2",
         str(out_path)
     ]
     subprocess.run(cmd, check=True)
