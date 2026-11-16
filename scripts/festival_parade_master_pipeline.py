@@ -28,13 +28,12 @@ import numpy as np
 ALL_XFADE_TRANSITIONS = [
     "fade", "dissolve", "smoothleft", "smoothright", "smoothup", "smoothdown",
     "circleopen", "circleclose", "wipeleft", "wiperight", "wipeup", "wipedown",
-    "slideleft", "slideright", "slideup", "slidedown", "radial", "rectcrop",
-    "circlecrop", "distance", "fadeblack", "vertopen", "vertclose",
-    "horzopen", "horzclose", "diagtl", "diagtr", "diagbl", "diagbr",
-    "hlslice", "hrslice", "vuslice", "vdslice", "hblur", "fadegrays",
-    "wipetl", "wipetr", "wipebl", "wipebr", "squeezeh", "squeezev",
-    "zoomin", "coverleft", "coverright", "coverup", "coverdown",
-    "revealleft", "revealright", "revealup", "revealdown"
+    "slideleft", "slideright", "slideup", "slidedown", "distance", "fadeblack",
+    "vertopen", "vertclose", "horzopen", "horzclose", "diagtl", "diagtr",
+    "diagbl", "diagbr", "hlslice", "hrslice", "vuslice", "vdslice",
+    "hblur", "fadegrays", "wipetl", "wipetr", "wipebl", "wipebr",
+    "squeezeh", "squeezev", "zoomin", "coverleft", "coverright", "coverup",
+    "coverdown", "revealleft", "revealright", "revealup", "revealdown"
 ]
 
 
@@ -407,6 +406,7 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
         ]
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-filter_threads", "1", "-filter_complex_threads", "1",
         *inputs,
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", "[aout]",
@@ -414,7 +414,21 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
         "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
         str(out_path)
     ]
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        safe_fc = re.sub(r"transition=[a-z]+:", "transition=dissolve:", filter_complex)
+        cmd_safe = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-filter_threads", "1", "-filter_complex_threads", "1",
+            *inputs,
+            "-filter_complex", safe_fc,
+            "-map", "[vout]", "-map", "[aout]",
+            *v_enc,
+            "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
+            str(out_path)
+        ]
+        subprocess.run(cmd_safe, check=True)
 
     # Free graded scene files immediately after batch render
     for item in batch_items:
