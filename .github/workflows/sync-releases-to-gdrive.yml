@@ -1,0 +1,142 @@
+name: Direct Cloud-to-Drive 4K60 MAX CINEMA Auto-Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which release to sync to Google Drive (all, parade, discovery)"
+        required: false
+        default: "all"
+
+jobs:
+  sync-parade-to-drive:
+    if: ${{ github.event.inputs.target == 'all' || github.event.inputs.target == 'parade' || github.event.inputs.target == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        idx: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Free Runner Disk Space (35+ GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Checkout Studio Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rclone & Multimedia Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
+          pip3 install --break-system-packages -q gdown yt-dlp
+          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
+
+      - name: Sync or Render & Auto-Upload Project 0${{ matrix.idx }} to Google Drive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
+        run: |
+          set -e
+          IDX="${{ matrix.idx }}"
+          PREFIX=$(printf "%02d_" "$IDX")
+          if [ "$IDX" -le 6 ]; then
+            DRIVE_ID="1RH5Ep5PjAK5G_ZfywDfkssttD_rRQjQ3"
+          else
+            DRIVE_ID="1DsS5dXrzw1eNHVl6CXDhlA_PUqTcEQji"
+          fi
+
+          if [ -z "$GDRIVE_RCLONE_CONF" ]; then
+            echo "ERROR: GDRIVE_RCLONE_CONF secret is not configured yet."
+            exit 1
+          fi
+
+          mkdir -p ~/.config/rclone
+          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+          mkdir -p sync_work output_parade
+          echo "Checking GitHub Release parade-4k60-max-cinema for ${PREFIX}*..."
+          gh release download parade-4k60-max-cinema -p "${PREFIX}*" -D sync_work --clobber || true
+
+          PARTS=$(ls sync_work/${PREFIX}*.mp4.part* 2>/dev/null | sort || true)
+          if [ -n "$PARTS" ]; then
+            FIRST_PART=$(echo "$PARTS" | head -n 1)
+            FINAL_MP4="output_parade/$(basename "${FIRST_PART%.part*}")"
+            echo "Reassembling $FINAL_MP4 from release parts..."
+            cat $PARTS > "$FINAL_MP4"
+            rm -f $PARTS
+            mv sync_work/${PREFIX}*.json output_parade/ 2>/dev/null || true
+          else
+            echo "Project ${PREFIX} not yet on Release — rendering 4K60 MAX CINEMA now via authenticated rclone..."
+            python3 scripts/festival_parade_master_pipeline.py "$IDX"
+            # Also publish to GitHub Release parade-4k60-max-cinema
+            mkdir -p rel_upload
+            cp output_parade/*.json rel_upload/ 2>/dev/null || true
+            for mp4 in output_parade/*.mp4; do
+              [ -e "$mp4" ] || continue
+              split -b 1900M -d "$mp4" "rel_upload/$(basename "$mp4").part"
+            done
+            gh release upload parade-4k60-max-cinema rel_upload/* --clobber || true
+            rm -rf rel_upload
+          fi
+
+          echo "Uploading Project ${PREFIX} 4K60 MAX CINEMA directly to Google Drive folder ${DRIVE_ID}..."
+          for f in output_parade/*; do
+            [ -e "$f" ] || continue
+            rclone copy "$f" "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" --drive-chunk-size 64M -v
+          done
+          echo "✅ Uploaded Project ${PREFIX} to Google Drive!"
+
+  sync-discovery-to-drive:
+    if: ${{ github.event.inputs.target == 'all' || github.event.inputs.target == 'discovery' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Free Runner Disk Space (35+ GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
+      - name: Install Rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
+
+      - name: Reassemble & Upload Discovery 4K60 MAX CINEMA Group ${{ matrix.group }} to Google Drive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
+        run: |
+          set -e
+          if [ -z "$GDRIVE_RCLONE_CONF" ]; then
+            echo "ERROR: GDRIVE_RCLONE_CONF secret is not configured yet."
+            exit 1
+          fi
+          mkdir -p ~/.config/rclone
+          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          DRIVE_ID="1wZmfSYFBWDwhydvtFGR9eK-GKspjvJlz"
+
+          GRP="${{ matrix.group }}"
+          START=$(( (GRP - 1) * 5 + 1 ))
+          END=$(( GRP * 5 ))
+
+          for IDX in $(seq $START $END); do
+            PREFIX=$(printf "%02d_" "$IDX")
+            mkdir -p disc_work
+            gh release download discovery-4k60-max-cinema -R dung11122d/cloud-video-studio -p "${PREFIX}*" -D disc_work --clobber
+            PARTS=$(ls disc_work/${PREFIX}*.mp4.part* 2>/dev/null | sort || true)
+            if [ -n "$PARTS" ]; then
+              FIRST_PART=$(echo "$PARTS" | head -n 1)
+              FINAL_MP4="disc_work/$(basename "${FIRST_PART%.part*}")"
+              cat $PARTS > "$FINAL_MP4"
+              rm -f $PARTS
+            fi
+            for f in disc_work/*; do
+              [ -e "$f" ] || continue
+              rclone copy "$f" "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Discovery_MAX_CINEMA/" --drive-chunk-size 64M -v
+            done
+            rm -rf disc_work
+          done
