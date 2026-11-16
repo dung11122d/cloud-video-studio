@@ -565,10 +565,19 @@ def build_seo_metadata(project: dict, total_duration: float, qa_summary: dict) -
 def main():
     t0 = time.time()
     if len(sys.argv) < 2:
-        print("Usage: python festival_parade_master_pipeline.py <project_idx_1_to_8>", flush=True)
+        print("Usage: python festival_parade_master_pipeline.py <project_idx_1_to_8> [--shard-idx S --num-shards K | --assemble-shards K]", flush=True)
         sys.exit(1)
 
     proj_idx = int(sys.argv[1])
+    shard_idx = None
+    num_shards = None
+    assemble_shards = None
+    if "--shard-idx" in sys.argv and "--num-shards" in sys.argv:
+        shard_idx = int(sys.argv[sys.argv.index("--shard-idx") + 1])
+        num_shards = int(sys.argv[sys.argv.index("--num-shards") + 1])
+    if "--assemble-shards" in sys.argv:
+        assemble_shards = int(sys.argv[sys.argv.index("--assemble-shards") + 1])
+
     manifest_path = Path(__file__).parent / "parade_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -578,13 +587,7 @@ def main():
         sys.exit(1)
 
     slug = project["slug"]
-    scenes = project["scenes"]
-    print(f"============================================================", flush=True)
-    print(f"🚀 STARTING 4K 60FPS MAX CINEMA PARADE PIPELINE: [{proj_idx}] {slug}", flush=True)
-    print(f"   Title: {project['title']}", flush=True)
-    print(f"   Scenes: {len(scenes)} | Music Bed: {project['music_style']}", flush=True)
-    print(f"============================================================", flush=True)
-
+    all_scenes = project["scenes"]
     work_dir = Path("work_parade") / slug
     raw_dir = work_dir / "raw"
     graded_dir = work_dir / "graded"
@@ -593,75 +596,166 @@ def main():
     for d in (raw_dir, graded_dir, batch_dir, out_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    # 1. Download all scenes (max_workers=3 to avoid Google Drive burst 429 rate-limits)
-    print(f"\n📥 [1/5] Downloading {len(scenes)} raw clips from Google Drive...", flush=True)
-    dl_tasks = [(s, raw_dir) for s in scenes]
-    downloaded = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        for res in pool.map(download_single_drive_file, dl_tasks):
-            if res is not None:
-                downloaded.append(res)
-    downloaded.sort(key=lambda x: x[0])
-    print(f"   ✔️ Downloaded {len(downloaded)}/{len(scenes)} scenes in {time.time() - t0:.1f}s", flush=True)
-    if len(downloaded) < 25:
-        raise RuntimeError(f"Incomplete download: only {len(downloaded)}/{len(scenes)} scenes retrieved.")
+    # Distributed Shard Assembler Mode
+    if assemble_shards is not None:
+        print(f"============================================================", flush=True)
+        print(f"⚡ ASSEMBLING {assemble_shards} PARALLEL 4K60 SHARDS FOR [{proj_idx}] {slug}", flush=True)
+        print(f"============================================================", flush=True)
+        shard_mp4s = []
+        norm_results = []
+        total_dur = 0.0
+        for s_i in range(assemble_shards):
+            s_mp4 = out_dir / f"shard_{proj_idx:02d}_{s_i:02d}.mp4"
+            s_json = out_dir / f"shard_{proj_idx:02d}_{s_i:02d}.json"
+            if not s_mp4.exists():
+                raise RuntimeError(f"Missing shard video: {s_mp4}")
+            shard_mp4s.append(s_mp4)
+            if s_json.exists():
+                s_meta = json.loads(s_json.read_text(encoding="utf-8"))
+                total_dur += float(s_meta.get("duration", 0.0))
+                norm_results.extend(s_meta.get("norm_results", []))
+            else:
+                total_dur += probe_clip_duration(s_mp4)
 
-    # 2. Per-scene OpenCV Auto-QA & 48kHz True Stereo Spatial Conditioning
-    t1 = time.time()
-    print(f"\n🔍 [2/5] OpenCV Auto-QA, 3D Denoise & 48kHz True Stereo Mastering across {len(downloaded)} scenes...", flush=True)
-    norm_tasks = [
-        (pos_idx, item[0], item[1], item[2], graded_dir)
-        for pos_idx, item in enumerate(downloaded, 1)
-    ]
-    norm_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        for res in pool.map(normalize_parade_scene_worker, norm_tasks):
-            if res is not None:
-                norm_results.append(res)
-                if len(norm_results) % 25 == 0 or len(norm_results) == len(downloaded):
-                    print(f"   -> Normalized {len(norm_results)}/{len(downloaded)} scenes...", flush=True)
-    norm_results.sort(key=lambda r: r["idx"])
-    print(f"   ✔️ Conditioned {len(norm_results)} scenes in {time.time() - t1:.1f}s", flush=True)
+        concat_list = work_dir / "shard_concat.txt"
+        concat_list.write_text(
+            "\n".join(f"file '{p.resolve().as_posix()}'" for p in shard_mp4s) + "\n",
+            encoding="utf-8"
+        )
+        merged_4k = work_dir / "merged_4k60_nobgm.mp4"
+        subprocess.run([
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(concat_list),
+            "-c", "copy",
+            str(merged_4k)
+        ], check=True)
+        for p in shard_mp4s:
+            p.unlink(missing_ok=True)
+        for s_i in range(assemble_shards):
+            (out_dir / f"shard_{proj_idx:02d}_{s_i:02d}.json").unlink(missing_ok=True)
+        scenes = all_scenes
+    else:
+        BATCH_SIZE = 6
+        if shard_idx is not None and num_shards is not None:
+            all_batches = [all_scenes[i:i + BATCH_SIZE] for i in range(0, len(all_scenes), BATCH_SIZE)]
+            b_per_shard = max(1, (len(all_batches) + num_shards - 1) // num_shards)
+            start_b = shard_idx * b_per_shard
+            end_b = min(len(all_batches), (shard_idx + 1) * b_per_shard)
+            shard_batches = all_batches[start_b:end_b]
+            scenes = [s for b in shard_batches for s in b]
+            print(f"============================================================", flush=True)
+            print(f"⚡ PARALLEL SHARD {shard_idx+1}/{num_shards} FOR [{proj_idx}] {slug} ({len(scenes)} scenes)", flush=True)
+            print(f"============================================================", flush=True)
+        else:
+            start_b = 0
+            scenes = all_scenes
+            print(f"============================================================", flush=True)
+            print(f"🚀 STARTING 4K 60FPS MAX CINEMA PARADE PIPELINE: [{proj_idx}] {slug}", flush=True)
+            print(f"   Title: {project['title']}", flush=True)
+            print(f"   Scenes: {len(scenes)} | Music Bed: {project['music_style']}", flush=True)
+            print(f"============================================================", flush=True)
 
-    # 3. Fused 6-clip Batch Xfade + Direct 4K 60fps MAX CINEMA Upscale (max_workers=3)
-    t2 = time.time()
-    BATCH_SIZE = 6
-    chunks = [norm_results[i:i + BATCH_SIZE] for i in range(0, len(norm_results), BATCH_SIZE)]
-    total_batches = len(chunks)
-    print(f"\n🎞️ [3/5] Fused 0.5s Xfade + Direct 4K 60fps MAX CINEMA Upscale across {total_batches} batches...", flush=True)
+        # 1. Multi-threaded Download (16 threads when authenticated via rclone/token!)
+        rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
+        dl_workers = 16 if (rclone_conf.exists() or os.environ.get("GDRIVE_ACCESS_TOKEN")) else 4
+        print(f"\n📥 [1/5] Multi-threaded Downloading {len(scenes)} raw clips ({dl_workers} threads)...", flush=True)
+        dl_tasks = [(s, raw_dir) for s in scenes]
+        downloaded = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=dl_workers) as pool:
+            for res in pool.map(download_single_drive_file, dl_tasks):
+                if res is not None:
+                    downloaded.append(res)
+        downloaded.sort(key=lambda x: x[0])
+        print(f"   ✔️ Downloaded {len(downloaded)}/{len(scenes)} scenes in {time.time() - t0:.1f}s", flush=True)
+        min_req = 3 if shard_idx is not None else 25
+        if len(downloaded) < min_req:
+            raise RuntimeError(f"Incomplete download: only {len(downloaded)}/{len(scenes)} scenes retrieved.")
 
-    batch_tasks = []
-    for b_idx, chunk in enumerate(chunks):
-        b_out = batch_dir / f"batch_4k60_{b_idx:03d}.mp4"
-        batch_tasks.append((b_idx, total_batches, chunk, b_out, 0.5, b_idx * BATCH_SIZE))
+        # 2. Per-scene OpenCV Auto-QA & 48kHz True Stereo Spatial Conditioning (8 parallel threads)
+        t1 = time.time()
+        print(f"\n🔍 [2/5] Multi-threaded OpenCV Auto-QA & 48kHz True Stereo Mastering ({len(downloaded)} scenes, 8 threads)...", flush=True)
+        norm_tasks = [
+            (pos_idx, item[0], item[1], item[2], graded_dir)
+            for pos_idx, item in enumerate(downloaded, 1)
+        ]
+        norm_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for res in pool.map(normalize_parade_scene_worker, norm_tasks):
+                if res is not None:
+                    norm_results.append(res)
+                    if len(norm_results) % 15 == 0 or len(norm_results) == len(downloaded):
+                        print(f"   -> Normalized {len(norm_results)}/{len(downloaded)} scenes...", flush=True)
+        norm_results.sort(key=lambda r: r["idx"])
+        print(f"   ✔️ Conditioned {len(norm_results)} scenes in {time.time() - t1:.1f}s", flush=True)
 
-    rendered_batches = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        for b_idx, b_out, b_dur in pool.map(render_4k60_batch_worker, batch_tasks):
-            rendered_batches.append((b_idx, b_out, b_dur))
-            print(f"   ✔️ 4K60 Batch {b_idx+1}/{total_batches} complete ({b_dur:.2f}s)", flush=True)
+        # 3. Fused 6-clip Batch Xfade + Direct 4K 60fps MAX CINEMA Upscale
+        t2 = time.time()
+        chunks = [norm_results[i:i + BATCH_SIZE] for i in range(0, len(norm_results), BATCH_SIZE)]
+        total_batches = len(chunks)
+        print(f"\n🎞️ [3/5] Fused 0.5s Xfade + Direct 4K 60fps MAX CINEMA Upscale across {total_batches} batches...", flush=True)
 
-    rendered_batches.sort(key=lambda x: x[0])
-    total_dur = sum(x[2] for x in rendered_batches)
-    concat_list = batch_dir / "concat_list.txt"
-    concat_list.write_text(
-        "\n".join(f"file '{x[1].resolve().as_posix()}'" for x in rendered_batches) + "\n",
-        encoding="utf-8"
-    )
+        batch_tasks = []
+        for b_idx, chunk in enumerate(chunks):
+            b_out = batch_dir / f"batch_4k60_{b_idx:03d}.mp4"
+            global_b_idx = (start_b + b_idx) if shard_idx is not None else b_idx
+            global_total_b = ((len(all_scenes) + BATCH_SIZE - 1) // BATCH_SIZE) if shard_idx is not None else total_batches
+            batch_tasks.append((global_b_idx, global_total_b, chunk, b_out, 0.5, global_b_idx * BATCH_SIZE))
 
-    merged_4k = work_dir / "merged_4k60_nobgm.mp4"
-    subprocess.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", str(concat_list),
-        "-c", "copy",
-        str(merged_4k)
-    ], check=True)
+        rendered_batches = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            for b_idx, b_out, b_dur in pool.map(render_4k60_batch_worker, batch_tasks):
+                rendered_batches.append((b_idx, b_out, b_dur))
+                print(f"   ✔️ 4K60 Batch {len(rendered_batches)}/{total_batches} complete ({b_dur:.2f}s)", flush=True)
 
-    # Free batch files immediately after lossless concat to save disk space
-    shutil.rmtree(batch_dir, ignore_errors=True)
-    shutil.rmtree(graded_dir, ignore_errors=True)
-    shutil.rmtree(raw_dir, ignore_errors=True)
-    print(f"   ✔️ Assembled 4K60 timeline ({total_dur:.2f}s = {total_dur/60:.2f} mins) in {time.time() - t2:.1f}s", flush=True)
+        rendered_batches.sort(key=lambda x: x[0])
+        total_dur = sum(x[2] for x in rendered_batches)
+        concat_list = batch_dir / "concat_list.txt"
+        concat_list.write_text(
+            "\n".join(f"file '{x[1].resolve().as_posix()}'" for x in rendered_batches) + "\n",
+            encoding="utf-8"
+        )
+
+        if shard_idx is not None and num_shards is not None:
+            shard_mp4 = out_dir / f"shard_{proj_idx:02d}_{shard_idx:02d}.mp4"
+            shard_json = out_dir / f"shard_{proj_idx:02d}_{shard_idx:02d}.json"
+            subprocess.run([
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "concat", "-safe", "0", "-i", str(concat_list),
+                "-c", "copy",
+                str(shard_mp4)
+            ], check=True)
+            serializable_norms = [
+                {
+                    "scene": r["scene"],
+                    "duration": r["duration"],
+                    "raw_audio_mean_db": r["raw_audio_mean_db"],
+                    "calibration": r["calibration"]
+                }
+                for r in norm_results
+            ]
+            shard_json.write_text(json.dumps({
+                "proj_idx": proj_idx,
+                "shard_idx": shard_idx,
+                "duration": round(total_dur, 3),
+                "norm_results": serializable_norms
+            }, indent=2), encoding="utf-8")
+            shutil.rmtree(work_dir, ignore_errors=True)
+            print(f"🎉 SHARD {shard_idx+1}/{num_shards} COMPLETE in {(time.time()-t0)/60:.1f} mins -> {shard_mp4.name} ({total_dur:.2f}s)", flush=True)
+            return
+
+        merged_4k = work_dir / "merged_4k60_nobgm.mp4"
+        subprocess.run([
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(concat_list),
+            "-c", "copy",
+            str(merged_4k)
+        ], check=True)
+
+        # Free batch files immediately after lossless concat to save disk space
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        shutil.rmtree(graded_dir, ignore_errors=True)
+        shutil.rmtree(raw_dir, ignore_errors=True)
+        print(f"   ✔️ Assembled 4K60 timeline ({total_dur:.2f}s = {total_dur/60:.2f} mins) in {time.time() - t2:.1f}s", flush=True)
 
     # 4. Mix Continuous Cultural Festive Harmonic Bed via -stream_loop -1 & -c:v copy (~15 seconds!)
     t3 = time.time()
