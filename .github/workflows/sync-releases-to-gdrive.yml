@@ -6,88 +6,26 @@ on:
       target:
         description: "Which release to sync to Google Drive (all, parade, discovery)"
         required: false
-        default: "all"
+        default: "discovery"
 
 jobs:
-  # 1. Immediate Assembly & 16-Thread Google Drive Upload for Projects 2 and 8 (All 6/6 Shards Already Complete!)
-  assemble-ready-projects-2-and-8:
+  # 30-Node Parallel Multi-Threaded Sync of All 30 Bird/Wildlife 4K60 MAX CINEMA Videos (~3.62 GB each = 107.4 GB)
+  sync-30-birds-max-cinema-to-drive:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        proj: [2, 8]
-    steps:
-      - name: Free Runner Disk Space (35+ GB)
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
-
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Assemble 6 Shards & Upload Project 0${{ matrix.proj }} to Google Drive & Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          IDX="${{ matrix.proj }}"
-          SHARD_PREFIX=$(printf "shard_%02d_" "$IDX")
-          if [ "$IDX" -le 6 ]; then
-            DRIVE_ID="1RH5Ep5PjAK5G_ZfywDfkssttD_rRQjQ3"
-          else
-            DRIVE_ID="1DsS5dXrzw1eNHVl6CXDhlA_PUqTcEQji"
-          fi
-
-          mkdir -p ~/.config/rclone output_parade
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade --clobber
-          python3 scripts/festival_parade_master_pipeline.py "$IDX" --assemble-shards 6
-
-          # 1. Multi-threaded 16-stream upload directly to Google Drive!
-          rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
-            --transfers 16 --checkers 32 --drive-chunk-size 128M --multi-thread-streams 16 -v
-
-          # 2. Split >1900MB MP4 into parts and publish to GitHub Release parade-4k60-max-cinema
-          for mp4 in output_parade/*.mp4; do
-            [ -e "$mp4" ] || continue
-            size_mb=$(du -m "$mp4" | cut -f1)
-            if [ "$size_mb" -gt 1900 ]; then
-              split -b 1900M -d "$mp4" "${mp4}.part"
-              rm -f "$mp4"
-            fi
-          done
-          gh release upload parade-4k60-max-cinema output_parade/* --clobber
-
-          # Clean up temporary shard assets on release
-          for s in 00 01 02 03 04 05; do
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.mp4" -y || true
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.json" -y || true
-          done
-
-  # 2. Render Only the Final Remaining Shard (7, 3) with Safe Fallback & Immediately Assemble Project 7
-  render-final-shard-7-3:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+        idx: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
     steps:
       - name: Checkout Studio Repository
         uses: actions/checkout@v4
 
-      - name: Install Multimedia & Rclone Stack
+      - name: Install Rclone
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          pip3 install --break-system-packages -q gdown yt-dlp
           curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
 
-      - name: Render Shard 3/6 for Project 07
+      - name: Reassemble & Upload Bird/Wildlife 4K60 MAX CINEMA #${{ matrix.idx }} to Google Drive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
@@ -95,56 +33,21 @@ jobs:
           set -e
           mkdir -p ~/.config/rclone
           echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-          python3 scripts/festival_parade_master_pipeline.py 7 --shard-idx 3 --num-shards 6
-          gh release upload parade-4k60-max-cinema output_parade/shard_07_03.* --clobber
+          DRIVE_ID="1wZmfSYFBWDwhydvtFGR9eK-GKspjvJlz"
 
-  assemble-project-7:
-    needs: render-final-shard-7-3
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - name: Free Runner Disk Space (35+ GB)
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          SLUG=$(python3 -c 'import json, sys; keys=sorted(json.load(open("scripts/drive_manifest.json", encoding="utf-8-sig")).keys()); raw=keys[int(sys.argv[1])]; print(raw.replace(" ", "_"))' "${{ matrix.idx }}")
+          echo "Syncing Bird/Wildlife Project [${{ matrix.idx }}]: ${SLUG}..."
 
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
+          mkdir -p disc_work
+          gh release download discovery-4k60-max-cinema -R dung11122d/cloud-video-studio -p "${SLUG}*" -D disc_work --clobber
+          PARTS=$(ls disc_work/${SLUG}*.mp4.part* 2>/dev/null | sort || true)
+          if [ -n "$PARTS" ]; then
+            FIRST_PART=$(echo "$PARTS" | head -n 1)
+            FINAL_MP4="disc_work/$(basename "${FIRST_PART%.part*}")"
+            cat $PARTS > "$FINAL_MP4"
+            rm -f $PARTS
+          fi
 
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Assemble 6 Shards & Upload Project 07 to Google Drive & Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          DRIVE_ID="1DsS5dXrzw1eNHVl6CXDhlA_PUqTcEQji"
-          mkdir -p ~/.config/rclone output_parade
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          gh release download parade-4k60-max-cinema -p "shard_07_*" -D output_parade --clobber
-          python3 scripts/festival_parade_master_pipeline.py 7 --assemble-shards 6
-
-          # 1. Multi-threaded 16-stream upload directly to Google Drive!
-          rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
+          rclone copy disc_work/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Discovery_MAX_CINEMA/" \
             --transfers 16 --checkers 32 --drive-chunk-size 128M --multi-thread-streams 16 -v
-
-          # 2. Split >1900MB MP4 into parts and publish to GitHub Release parade-4k60-max-cinema
-          for mp4 in output_parade/*.mp4; do
-            [ -e "$mp4" ] || continue
-            size_mb=$(du -m "$mp4" | cut -f1)
-            if [ "$size_mb" -gt 1900 ]; then
-              split -b 1900M -d "$mp4" "${mp4}.part"
-              rm -f "$mp4"
-            fi
-          done
-          gh release upload parade-4k60-max-cinema output_parade/* --clobber
-
-          for s in 00 01 02 03 04 05; do
-            gh release delete-asset parade-4k60-max-cinema "shard_07_${s}.mp4" -y || true
-            gh release delete-asset parade-4k60-max-cinema "shard_07_${s}.json" -y || true
-          done
+          rm -rf disc_work
