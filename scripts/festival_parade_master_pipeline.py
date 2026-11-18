@@ -124,7 +124,7 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
     return None
 
 
-def probe_clip_audio_stats(clip_path: Path) -> tuple[float, bool, float, float]:
+def probe_clip_audio_stats(clip_path: Path) -> tuple[float, bool, float, float, int, str, float]:
     proc = subprocess.run(
         ["ffmpeg", "-hide_banner", "-i", str(clip_path), "-af", "volumedetect", "-vn", "-f", "null", "-"],
         capture_output=True, text=True
@@ -137,9 +137,15 @@ def probe_clip_audio_stats(clip_path: Path) -> tuple[float, bool, float, float]:
     has_audio = "Audio:" in stderr
     m_mean = re.search(r"mean_volume:\s*([-\d\.]+)\s*dB", stderr)
     m_max = re.search(r"max_volume:\s*([-\d\.]+)\s*dB", stderr)
+    m_br = re.search(r"bitrate:\s*(\d+)\s*kb/s", stderr)
+    m_res = re.search(r"Video:.*?\s(\d{3,4}x\d{3,4})", stderr)
+    m_fps = re.search(r"(\d+(?:\.\d+)?)\s*fps", stderr)
     mean_v = float(m_mean.group(1)) if m_mean else -91.0
     max_v = float(m_max.group(1)) if m_max else -91.0
-    return dur, has_audio, mean_v, max_v
+    bitrate_kbps = int(m_br.group(1)) if m_br else int((clip_path.stat().st_size * 8) / (max(dur, 1.0) * 1000))
+    res_str = m_res.group(1) if m_res else "1280x720"
+    fps_val = float(m_fps.group(1)) if m_fps else 24.0
+    return dur, has_audio, mean_v, max_v, bitrate_kbps, res_str, fps_val
 
 
 def probe_clip_duration(clip_path: Path) -> float:
@@ -150,17 +156,23 @@ def probe_clip_duration(clip_path: Path) -> float:
     return 10.0
 
 
-def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float) -> dict:
+def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float, bitrate_kbps: int = 14000) -> dict:
     result = {
         "st": 0.0,
         "et": round(raw_dur, 2),
+        "bitrate_kbps": bitrate_kbps,
+        "quality_tier": "BALANCED_HD",
         "sharpness": 120.0,
         "luma": 125.0,
+        "dynamic_range": 135.0,
         "sat": 120.0,
         "contrast": 1.05,
         "brightness": 0.0,
         "saturation": 1.10,
         "gamma": 1.0,
+        "cas_strength": 0.45,
+        "hqdn3d": "1.3:1.0:2.2:1.6",
+        "deband": False,
         "delogo_top_right": False,
     }
     try:
@@ -171,6 +183,7 @@ def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float) -> dict:
 
         sharpness = []
         lumas = []
+        dyn_ranges = []
         sats = []
         tr_patches = []
         step = max(int(fps // 2), 1)
@@ -186,6 +199,8 @@ def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float) -> dict:
                     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
                     sharpness.append((idx / fps, float(cv2.Laplacian(gray, cv2.CV_64F).var())))
                     lumas.append(float(gray.mean()))
+                    p5, p95 = np.percentile(gray, [5, 95])
+                    dyn_ranges.append(float(p95 - p5))
                     sats.append(float(hsv[:, :, 1].mean()))
                     tr_patches.append(gray[3:14, 285:318].astype(np.float32))
         cap.release()
@@ -198,29 +213,57 @@ def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float) -> dict:
             else:
                 result["et"] = round(duration, 2)
 
+        # Adaptive Quality Tier & Compression Recovery based on per-clip Bitrate & Sharpness
+        if bitrate_kbps < 11500 or result["sharpness"] < 180.0:
+            result["quality_tier"] = "LOW_BITRATE_RECOVERY"
+            result["hqdn3d"] = "2.0:1.5:3.0:2.2"
+            result["cas_strength"] = 0.56
+            result["deband"] = True
+        elif bitrate_kbps > 19500 and result["sharpness"] > 320.0:
+            result["quality_tier"] = "HIGH_BITRATE_ULTRA_DENSE"
+            result["hqdn3d"] = "1.0:0.8:1.8:1.2"
+            result["cas_strength"] = 0.38
+            result["deband"] = False
+        else:
+            result["quality_tier"] = "BALANCED_HD"
+            result["hqdn3d"] = "1.3:1.0:2.2:1.6"
+            result["cas_strength"] = 0.46
+            result["deband"] = False
+
+        if dyn_ranges:
+            mean_dr = sum(dyn_ranges) / len(dyn_ranges)
+            result["dynamic_range"] = round(mean_dr, 1)
+            if mean_dr < 115.0:
+                result["contrast"] = 1.08
+            elif mean_dr > 185.0:
+                result["contrast"] = 1.02
+            else:
+                result["contrast"] = 1.05
+
         if lumas:
             mean_luma = sum(lumas) / len(lumas)
             result["luma"] = round(mean_luma, 1)
             if mean_luma < 85.0:
-                result["gamma"] = 1.10
-                result["brightness"] = 0.03
-                result["contrast"] = 1.06
+                result["gamma"] = 1.11
+                result["brightness"] = 0.030
             elif mean_luma < 105.0:
-                result["gamma"] = 1.05
+                result["gamma"] = 1.06
                 result["brightness"] = 0.015
-                result["contrast"] = 1.05
             elif mean_luma > 168.0:
                 result["gamma"] = 0.95
-                result["brightness"] = -0.02
-                result["contrast"] = 1.03
+                result["brightness"] = -0.020
 
         if sats:
             mean_sat = sum(sats) / len(sats)
             result["sat"] = round(mean_sat, 1)
             if mean_sat < 95.0:
-                result["saturation"] = 1.16
+                result["saturation"] = 1.18
+            elif mean_sat < 115.0:
+                result["saturation"] = 1.12
             elif mean_sat > 155.0:
-                result["saturation"] = 1.03
+                result["saturation"] = 1.02
+            else:
+                result["saturation"] = 1.08
 
         if len(tr_patches) >= 4:
             mean_tr = sum(tr_patches) / len(tr_patches)
@@ -234,8 +277,8 @@ def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float) -> dict:
 
 def normalize_parade_scene_worker(args_tuple) -> dict | None:
     pos_idx, s_num, s_meta, clip_path, graded_dir = args_tuple
-    raw_dur, has_audio, mean_v, max_v = probe_clip_audio_stats(clip_path)
-    cal = analyze_and_calibrate_scene(clip_path, raw_dur)
+    raw_dur, has_audio, mean_v, max_v, bitrate_kbps, res_str, fps_val = probe_clip_audio_stats(clip_path)
+    cal = analyze_and_calibrate_scene(clip_path, raw_dur, bitrate_kbps)
     st, et = cal["st"], cal["et"]
     dur = max(et - st, 2.0)
 
@@ -244,9 +287,11 @@ def normalize_parade_scene_worker(args_tuple) -> dict | None:
     vf_parts = ["scale=1280:720:flags=lanczos"]
     if cal["delogo_top_right"]:
         vf_parts.append("delogo=x=1170:y=14:w=102:h=36")
+    vf_parts.append(f"hqdn3d={cal['hqdn3d']}")
+    if cal.get("deband"):
+        vf_parts.append("gradfun=strength=1.4:radius=8")
     vf_parts.extend([
-        "hqdn3d=1.2:0.9:2.2:1.6",
-        "cas=strength=0.45",
+        f"cas=strength={cal['cas_strength']:.2f}",
         f"eq=contrast={cal['contrast']:.2f}:brightness={cal['brightness']:.3f}:saturation={cal['saturation']:.2f}:gamma={cal['gamma']:.2f}",
         "format=yuv420p"
     ])
@@ -261,20 +306,9 @@ def normalize_parade_scene_worker(args_tuple) -> dict | None:
 
     usable_audio = has_audio and (max_v >= -45.0)
     if usable_audio:
-        if mean_v < -26.0:
-            makeup_db = 7.0
-        elif mean_v < -20.0:
-            makeup_db = 4.5
-        elif mean_v < -16.0:
-            makeup_db = 2.5
-        else:
-            makeup_db = 1.0
+        # Continuous per-clip loudness matching toward -13.5dB pre-compressor target
+        makeup_db = round(max(0.5, min(9.0, -11.5 - mean_v)), 1)
 
-        # Viral 4K Parade Spatial Stereo Conditioning Chain:
-        # 1. Sub-bass rumble cut (65Hz) + 24kHz Nyquist anti-aliasing (11.8kHz) + FFT Denoise
-        # 2. Marching Drum/Brass Warmth EQ (+1.8dB @ 110Hz, -1.5dB anti-harshness @ 3.2kHz, +1.5dB chime air @ 6.5kHz)
-        # 3. 24kHz Mono -> 48kHz True Stereo Spatial Widening (Haas micro-echo + ExtraStereo 1.35)
-        # 4. Broadcast Compressor + Dynamic Audio Normalizer
         af_chain = (
             "highpass=f=65,"
             "lowpass=f=11800,"
@@ -300,6 +334,7 @@ def normalize_parade_scene_worker(args_tuple) -> dict | None:
             str(dst)
         ]
     else:
+        makeup_db = 0.0
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{st:.2f}", "-to", f"{et:.2f}",
@@ -320,6 +355,9 @@ def normalize_parade_scene_worker(args_tuple) -> dict | None:
         pass
 
     actual_dur = probe_clip_duration(dst)
+    cal["source_resolution"] = res_str
+    cal["source_fps"] = fps_val
+    cal["applied_audio_makeup_db"] = makeup_db
     return {
         "idx": pos_idx,
         "scene_num": s_num,
@@ -447,12 +485,16 @@ def generate_cultural_festive_bgm(out_m4a: Path, music_style: str):
     tailored to each parade's exact cultural theme, ready for seamless -stream_loop -1 mixing.
     """
     style_freqs = {
-        "aegean_maritime_festive": (146.83, 220.00, 293.66, 369.99, 440.00),      # D Major Open Aegean Fifths
-        "christmas_symphonic_chimes": (130.81, 196.00, 261.63, 329.63, 493.88),   # C Major 7th Holiday Chimes
-        "nordic_choral_winter": (174.61, 261.63, 349.23, 440.00, 523.25),         # F Major Luminous Nordic Choir
-        "thai_royal_victory_march": (98.00, 146.83, 196.00, 246.94, 293.66),      # G Royal Bronze Gong & Fifths
-        "thai_lanna_pentatonic_gold": (130.81, 196.00, 220.00, 261.63, 329.63),   # C Golden Lanna Pentatonic
-        "thai_classical_royal_court": (174.61, 220.00, 261.63, 349.23, 392.00),   # F Royal Court Pentatonic
+        "aegean_maritime_festive": (146.83, 220.00, 293.66, 369.99, 440.00),              # D Major Open Aegean Fifths
+        "christmas_symphonic_chimes": (130.81, 196.00, 261.63, 329.63, 493.88),           # C Major 7th Holiday Chimes
+        "nordic_choral_winter": (174.61, 261.63, 349.23, 440.00, 523.25),                 # F Major Luminous Nordic Choir
+        "thai_royal_victory_march": (98.00, 146.83, 196.00, 246.94, 293.66),              # G Royal Bronze Gong & Fifths
+        "thai_lanna_pentatonic_gold": (130.81, 196.00, 220.00, 261.63, 329.63),           # C Golden Lanna Pentatonic
+        "thai_classical_royal_court": (174.61, 220.00, 261.63, 349.23, 392.00),           # F Royal Court Pentatonic
+        "dutch_carillon_brass_festive": (146.83, 185.00, 220.00, 293.66, 440.00),         # D Major Dutch Carillon Bell & Brass
+        "bavarian_christmas_glockenspiel_choir": (196.00, 246.94, 293.66, 392.00, 587.33),# G Major Bavarian Glockenspiel & Choir
+        "indian_royal_shehnai_dhol_utsav": (138.59, 207.65, 277.18, 349.23, 415.30),      # C# Royal Rajasthani/Varanasi Utsav Drone
+        "american_broadway_brass_fanfare": (116.54, 174.61, 233.08, 293.66, 466.16),      # Bb Major Broadway & Manhattan Fanfare
     }
     f1, f2, f3, f4, f5 = style_freqs.get(music_style, style_freqs["thai_lanna_pentatonic_gold"])
 
@@ -586,18 +628,24 @@ def main():
     shard_idx = None
     num_shards = None
     assemble_shards = None
+    manifest_name = "parade_manifest.json"
+    shard_prefix = "shard"
     if "--shard-idx" in sys.argv and "--num-shards" in sys.argv:
         shard_idx = int(sys.argv[sys.argv.index("--shard-idx") + 1])
         num_shards = int(sys.argv[sys.argv.index("--num-shards") + 1])
     if "--assemble-shards" in sys.argv:
         assemble_shards = int(sys.argv[sys.argv.index("--assemble-shards") + 1])
+    if "--manifest" in sys.argv:
+        manifest_name = sys.argv[sys.argv.index("--manifest") + 1]
+    if "--shard-prefix" in sys.argv:
+        shard_prefix = sys.argv[sys.argv.index("--shard-prefix") + 1]
 
-    manifest_path = Path(__file__).parent / "parade_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_path = Path(__file__).parent / manifest_name
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
 
     project = next((p for p in manifest if p["idx"] == proj_idx), None)
     if not project:
-        print(f"Project index {proj_idx} not found in parade_manifest.json", flush=True)
+        print(f"Project index {proj_idx} not found in {manifest_name}", flush=True)
         sys.exit(1)
 
     slug = project["slug"]
@@ -619,8 +667,8 @@ def main():
         norm_results = []
         total_dur = 0.0
         for s_i in range(assemble_shards):
-            s_mp4 = out_dir / f"shard_{proj_idx:02d}_{s_i:02d}.mp4"
-            s_json = out_dir / f"shard_{proj_idx:02d}_{s_i:02d}.json"
+            s_mp4 = out_dir / f"{shard_prefix}_{proj_idx:02d}_{s_i:02d}.mp4"
+            s_json = out_dir / f"{shard_prefix}_{proj_idx:02d}_{s_i:02d}.json"
             if not s_mp4.exists():
                 raise RuntimeError(f"Missing shard video: {s_mp4}")
             shard_mp4s.append(s_mp4)
@@ -646,7 +694,7 @@ def main():
         for p in shard_mp4s:
             p.unlink(missing_ok=True)
         for s_i in range(assemble_shards):
-            (out_dir / f"shard_{proj_idx:02d}_{s_i:02d}.json").unlink(missing_ok=True)
+            (out_dir / f"{shard_prefix}_{proj_idx:02d}_{s_i:02d}.json").unlink(missing_ok=True)
         scenes = all_scenes
     else:
         BATCH_SIZE = 6
@@ -730,8 +778,8 @@ def main():
         )
 
         if shard_idx is not None and num_shards is not None:
-            shard_mp4 = out_dir / f"shard_{proj_idx:02d}_{shard_idx:02d}.mp4"
-            shard_json = out_dir / f"shard_{proj_idx:02d}_{shard_idx:02d}.json"
+            shard_mp4 = out_dir / f"{shard_prefix}_{proj_idx:02d}_{shard_idx:02d}.mp4"
+            shard_json = out_dir / f"{shard_prefix}_{proj_idx:02d}_{shard_idx:02d}.json"
             subprocess.run([
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                 "-f", "concat", "-safe", "0", "-i", str(concat_list),
@@ -808,6 +856,11 @@ def main():
     qa_metrics = verify_and_auto_fix_master(final_mp4)
     final_size_gb = final_mp4.stat().st_size / (1024 ** 3)
 
+    tier_counts = {}
+    for r in norm_results:
+        t = r["calibration"].get("quality_tier", "BALANCED_HD")
+        tier_counts[t] = tier_counts.get(t, 0) + 1
+
     qa_summary = {
         "project_idx": proj_idx,
         "slug": slug,
@@ -815,7 +868,10 @@ def main():
         "scenes_rendered": len(norm_results),
         "duration_seconds": round(total_dur, 2),
         "final_size_gb": round(final_size_gb, 3),
+        "avg_bitrate_kbps": round(float(np.mean([r["calibration"].get("bitrate_kbps", 14000) for r in norm_results])), 1),
+        "quality_tier_distribution": tier_counts,
         "avg_luma": round(float(np.mean([r["calibration"]["luma"] for r in norm_results])), 2),
+        "avg_dynamic_range": round(float(np.mean([r["calibration"].get("dynamic_range", 135.0) for r in norm_results])), 2),
         "avg_sharpness": round(float(np.mean([r["calibration"]["sharpness"] for r in norm_results])), 2),
         "music_style": project["music_style"],
         "final_qa_metrics": qa_metrics
@@ -831,9 +887,18 @@ def main():
             {
                 "scene": r["scene"],
                 "duration": r["duration"],
+                "source_bitrate_kbps": r["calibration"].get("bitrate_kbps", 14000),
+                "quality_tier": r["calibration"].get("quality_tier", "BALANCED_HD"),
                 "raw_audio_mean_db": r["raw_audio_mean_db"],
+                "applied_audio_makeup_db": r["calibration"].get("applied_audio_makeup_db", 1.0),
                 "luma": r["calibration"]["luma"],
-                "gamma": r["calibration"]["gamma"]
+                "dynamic_range": r["calibration"].get("dynamic_range", 135.0),
+                "sat": r["calibration"].get("sat", 120.0),
+                "sharpness": r["calibration"]["sharpness"],
+                "cas_strength": r["calibration"].get("cas_strength", 0.45),
+                "deband_applied": r["calibration"].get("deband", False),
+                "gamma": r["calibration"]["gamma"],
+                "saturation_mult": r["calibration"].get("saturation", 1.10)
             }
             for r in norm_results
         ]
