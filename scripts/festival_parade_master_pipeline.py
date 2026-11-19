@@ -297,7 +297,7 @@ def normalize_parade_scene_worker(args_tuple) -> dict | None:
     ])
     vf_chain = ",".join(vf_parts)
 
-    if pos_idx == 1:
+    if s_num == 1:
         vf_chain += (
             ",split=2[sharp][blur_in];"
             "[blur_in]gblur=sigma=20[blurred];"
@@ -373,16 +373,29 @@ def normalize_parade_scene_worker(args_tuple) -> dict | None:
 
 def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
     """
-    Crash-proof 6-clip batch renderer:
-    Stitches 6 scenes with 0.5s rotating xfade + acrossfade AND upscales directly to
-    3840x2160 @ 60fps MAX CINEMA (Lanczos SIMD + CAS 0.50 + Unsharp, CRF 15, Maxrate 45M).
+    Crash-proof 6-clip batch renderer with true 1.0-second Pure Opacity Cross-Dissolve (0% -> 100% alpha)
+    across BOTH internal scenes and batch/shard boundaries (zero dip-to-black anywhere!).
     """
-    b_idx, total_batches, batch_items, out_path, overlap, start_t_idx = args_tuple
+    b_idx, total_batches, batch_items, out_path, overlap, prev_item = args_tuple
+    overlap = 1.000
     inputs = []
+    effective_items = []
+
+    if prev_item is not None:
+        prev_dur = float(prev_item["duration"])
+        tail_len = min(2.000, max(1.200, prev_dur - 0.100))
+        ss_pos = max(0.0, prev_dur - tail_len)
+        inputs.extend(["-ss", f"{ss_pos:.3f}", "-i", str(prev_item["path"])])
+        effective_items.append({"path": prev_item["path"], "duration": tail_len})
+        trim_start = max(0.100, tail_len - overlap)
+    else:
+        trim_start = 0.000
+
     for item in batch_items:
         inputs.extend(["-i", str(item["path"])])
+        effective_items.append(item)
 
-    n = len(batch_items)
+    n = len(effective_items)
     v_chains = []
     a_chains = []
 
@@ -390,36 +403,48 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
         v_chains.append(f"[{i}:v]fps=60[vf{i}]")
 
     if n == 1:
-        accumulated_offset = batch_items[0]["duration"]
+        accumulated_offset = effective_items[0]["duration"]
         v_chains.append("[vf0]null[vx_raw]")
         a_chains.append("[0:a]anull[ax_raw]")
     else:
-        accumulated_offset = batch_items[0]["duration"]
+        accumulated_offset = effective_items[0]["duration"]
         for i in range(1, n):
-            offset = max(0.1, accumulated_offset - overlap)
-            trans_name = ALL_XFADE_TRANSITIONS[(start_t_idx + i - 1) % len(ALL_XFADE_TRANSITIONS)]
+            offset = max(0.100, accumulated_offset - overlap)
 
             vin_a = "[vf0]" if i == 1 else f"[vx{i-1}]"
             vin_b = f"[vf{i}]"
             vout = "[vx_raw]" if i == n - 1 else f"[vx{i}]"
-            v_chains.append(f"{vin_a}{vin_b}xfade=transition={trans_name}:duration={overlap:.3f}:offset={offset:.3f}{vout}")
+            # Pure 1.0-second opacity cross-blend (incoming clip opacity 0% -> 100% over 1.0s)
+            v_chains.append(f"{vin_a}{vin_b}xfade=transition=fade:duration={overlap:.3f}:offset={offset:.3f}{vout}")
 
             ain_a = "[0:a]" if i == 1 else f"[ax{i-1}]"
             ain_b = f"[{i}:a]"
             aout = "[ax_raw]" if i == n - 1 else f"[ax{i}]"
-            a_chains.append(f"{ain_a}{ain_b}acrossfade=d={overlap:.3f}:c1=tri:c2=tri{aout}")
+            # Equal-power sine 1.0-second audio crossfade
+            a_chains.append(f"{ain_a}{ain_b}acrossfade=d={overlap:.3f}:c1=qsin:c2=qsin{aout}")
 
-            accumulated_offset = offset + batch_items[i]["duration"]
+            accumulated_offset = offset + effective_items[i]["duration"]
 
-    fade_out_st = max(0.1, accumulated_offset - 0.22)
-    v_post = "scale=3840:2160:flags=lanczos,unsharp=3:3:0.50:3:3:0.0,format=yuv420p"
-    a_post = "anull"
-    if b_idx > 0:
-        v_post += ",fade=t=in:st=0:d=0.20"
-        a_post += ",afade=t=in:st=0:d=0.20"
     if b_idx < total_batches - 1:
-        v_post += f",fade=t=out:st={fade_out_st:.2f}:d=0.20"
-        a_post += f",afade=t=out:st={fade_out_st:.2f}:d=0.20"
+        trim_end = max(trim_start + 0.500, accumulated_offset - overlap)
+    else:
+        trim_end = accumulated_offset
+
+    out_dur_est = max(0.500, trim_end - trim_start)
+    v_post = (
+        f"trim=start={trim_start:.3f}:end={trim_end:.3f},setpts=PTS-STARTPTS,"
+        "scale=3840:2160:flags=lanczos,unsharp=3:3:0.50:3:3:0.0,format=yuv420p"
+    )
+    a_post = f"atrim=start={trim_start:.3f}:end={trim_end:.3f},asetpts=PTS-STARTPTS"
+
+    # Only fade in at 00:00 of the very first batch, and only fade out at the very end of the final batch!
+    if b_idx == 0:
+        v_post += ",fade=t=in:st=0:d=0.80"
+        a_post += ",afade=t=in:st=0:d=0.80"
+    if b_idx == total_batches - 1:
+        fo_st = max(0.10, out_dur_est - 1.50)
+        v_post += f",fade=t=out:st={fo_st:.2f}:d=1.50"
+        a_post += f",afade=t=out:st={fo_st:.2f}:d=1.50"
 
     v_chains.append(f"[vx_raw]{v_post}[vout]")
     a_chains.append(f"[ax_raw]{a_post}[aout]")
@@ -452,28 +477,7 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
         "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
         str(out_path)
     ]
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
-        safe_fc = re.sub(r"transition=[a-z]+:", "transition=dissolve:", filter_complex)
-        cmd_safe = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-filter_threads", "1", "-filter_complex_threads", "1",
-            *inputs,
-            "-filter_complex", safe_fc,
-            "-map", "[vout]", "-map", "[aout]",
-            *v_enc,
-            "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2",
-            str(out_path)
-        ]
-        subprocess.run(cmd_safe, check=True)
-
-    # Free graded scene files immediately after batch render
-    for item in batch_items:
-        try:
-            item["path"].unlink(missing_ok=True)
-        except Exception:
-            pass
+    subprocess.run(cmd, check=True)
 
     actual_dur = probe_clip_duration(out_path)
     return b_idx, out_path, actual_dur
@@ -481,43 +485,119 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
 
 def generate_cultural_festive_bgm(out_m4a: Path, music_style: str):
     """
-    Synthesizes a 180-second Stereo 48kHz Cultural Festive Harmonic & Ceremonial Bed
-    tailored to each parade's exact cultural theme, ready for seamless -stream_loop -1 mixing.
+    Synthesizes a 100% Phase-Continuous, Zero-Seam 64-second 8-Chord Symphonic & Ceremonial Processional Score
+    at 48kHz Stereo using NumPy periodic raised-cosine voice-leading (no internal fade dips or abrupt jumps!).
+    When streamed via -stream_loop -1 across a 27-minute parade, the loop point at 64.0s is mathematically C1-continuous.
     """
-    style_freqs = {
-        "aegean_maritime_festive": (146.83, 220.00, 293.66, 369.99, 440.00),              # D Major Open Aegean Fifths
-        "christmas_symphonic_chimes": (130.81, 196.00, 261.63, 329.63, 493.88),           # C Major 7th Holiday Chimes
-        "nordic_choral_winter": (174.61, 261.63, 349.23, 440.00, 523.25),                 # F Major Luminous Nordic Choir
-        "thai_royal_victory_march": (98.00, 146.83, 196.00, 246.94, 293.66),              # G Royal Bronze Gong & Fifths
-        "thai_lanna_pentatonic_gold": (130.81, 196.00, 220.00, 261.63, 329.63),           # C Golden Lanna Pentatonic
-        "thai_classical_royal_court": (174.61, 220.00, 261.63, 349.23, 392.00),           # F Royal Court Pentatonic
-        "dutch_carillon_brass_festive": (146.83, 185.00, 220.00, 293.66, 440.00),         # D Major Dutch Carillon Bell & Brass
-        "bavarian_christmas_glockenspiel_choir": (196.00, 246.94, 293.66, 392.00, 587.33),# G Major Bavarian Glockenspiel & Choir
-        "indian_royal_shehnai_dhol_utsav": (138.59, 207.65, 277.18, 349.23, 415.30),      # C# Royal Rajasthani/Varanasi Utsav Drone
-        "american_broadway_brass_fanfare": (116.54, 174.61, 233.08, 293.66, 466.16),      # Bb Major Broadway & Manhattan Fanfare
+    import wave
+
+    style_roots = {
+        "aegean_maritime_festive": 146.83,               # D Major Open Aegean Processional
+        "christmas_symphonic_chimes": 130.81,            # C Major Holiday Symphonic Cavalcade
+        "nordic_choral_winter": 174.61,                  # F Major Luminous Nordic Processional
+        "thai_royal_victory_march": 196.00,              # G Major Royal Bronze Gong & Cavalcade
+        "thai_lanna_pentatonic_gold": 130.81,            # C Major Golden Lanna Processional
+        "thai_classical_royal_court": 174.61,            # F Major Royal Court Processional
+        "dutch_carillon_brass_festive": 146.83,          # D Major Dutch Carillon & Royal Brass
+        "bavarian_christmas_glockenspiel_choir": 196.00, # G Major Bavarian Glockenspiel & Choir
+        "indian_royal_shehnai_dhol_utsav": 138.59,       # C# Major Royal Rajasthani/Varanasi Utsav
+        "american_broadway_brass_fanfare": 155.56,       # Eb Major Grand Avenue Parade Fanfare
+        "french_lumiere_orchestral_chimes": 164.81,      # E Major Luminous Cathedral Processional
+        "british_royal_westend_christmas_chimes": 146.83,# D Major Royal Regent Street Holiday Brass
     }
-    f1, f2, f3, f4, f5 = style_freqs.get(music_style, style_freqs["thai_lanna_pentatonic_gold"])
+    root = style_roots.get(music_style, 146.83)
+
+    sr = 48000
+    cycle_dur = 64.0
+    n_samples = int(sr * cycle_dur)
+    t = np.arange(n_samples, dtype=np.float64) / sr
+
+    def qfreq(f: float) -> float:
+        # Quantize frequency to an exact integer number of cycles per 64.0s so t=64.0s matches t=0.0s in phase!
+        return round(f * cycle_dur) / cycle_dur
+
+    # 8-Chord Grand Processional Progression (I -> V -> vi -> iii -> IV -> I -> ii -> V), 8.0s per chord
+    chord_ratios = [
+        (1.0000, 1.2500, 1.5000, 2.0000),  # I
+        (0.7500, 1.1250, 1.5000, 1.8750),  # V
+        (0.8333, 1.0000, 1.2500, 1.6667),  # vi
+        (0.6250, 0.9375, 1.2500, 1.5000),  # iii
+        (0.6667, 1.0000, 1.3333, 1.6667),  # IV
+        (1.0000, 1.2500, 1.5000, 2.0000),  # I
+        (0.7500, 0.8889, 1.1250, 1.5000),  # ii/V
+        (0.7500, 1.1250, 1.5000, 2.2500),  # V7/add9
+    ]
+
+    left = np.zeros(n_samples, dtype=np.float64)
+    right = np.zeros(n_samples, dtype=np.float64)
+    chord_len = cycle_dur / len(chord_ratios)  # 8.0s
+    xf_len = 2.5  # 2.5s smooth raised-cosine chord cross-blend
+
+    for c_idx, ratios in enumerate(chord_ratios):
+        center_t = (c_idx + 0.5) * chord_len
+        # Periodic distance on the 64.0s circle
+        dist = np.abs(((t - center_t + cycle_dur / 2.0) % cycle_dur) - cycle_dur / 2.0)
+        half_flat = (chord_len - xf_len) / 2.0
+        half_total = (chord_len + xf_len) / 2.0
+        env = np.where(
+            dist <= half_flat,
+            1.0,
+            np.where(
+                dist >= half_total,
+                0.0,
+                0.5 * (1.0 + np.cos(np.pi * (dist - half_flat) / xf_len))
+            )
+        )
+
+        chord_sig_l = np.zeros(n_samples, dtype=np.float64)
+        chord_sig_r = np.zeros(n_samples, dtype=np.float64)
+        for v_i, r in enumerate(ratios):
+            f_base = qfreq(root * r)
+            f_oct = qfreq(root * r * 2.0)
+            f_fifth = qfreq(root * r * 3.0)
+            # Gentle periodic stereo chorus modulation (exact integer cycles per 64s)
+            mod_f = qfreq(0.125 * (v_i + 1))
+            phase_mod = 0.18 * np.sin(2.0 * np.pi * mod_f * t + v_i * 1.1)
+            voice_l = (
+                0.52 * np.sin(2.0 * np.pi * f_base * t + phase_mod)
+                + 0.28 * np.sin(2.0 * np.pi * f_oct * t - phase_mod)
+                + 0.12 * np.sin(2.0 * np.pi * f_fifth * t)
+            )
+            voice_r = (
+                0.52 * np.sin(2.0 * np.pi * f_base * t - phase_mod)
+                + 0.28 * np.sin(2.0 * np.pi * f_oct * t + phase_mod)
+                + 0.12 * np.sin(2.0 * np.pi * f_fifth * t + 0.4)
+            )
+            pan_l = 0.72 - 0.10 * (v_i % 2)
+            pan_r = 0.62 + 0.10 * (v_i % 2)
+            chord_sig_l += pan_l * voice_l / len(ratios)
+            chord_sig_r += pan_r * voice_r / len(ratios)
+
+        left += env * chord_sig_l
+        right += env * chord_sig_r
+
+    # Gentle ceremonial processional pulse (exact 32 breath swells per 64s = 0.5 Hz, smooth cosine)
+    pulse = 0.88 + 0.12 * np.sin(2.0 * np.pi * (32.0 / cycle_dur) * t)
+    left *= pulse * 0.45
+    right *= pulse * 0.45
+
+    stereo_pcm = np.clip(np.column_stack([left, right]) * 32767.0, -32767, 32767).astype(np.int16)
+    tmp_wav = out_m4a.with_suffix(".wav")
+    with wave.open(str(tmp_wav), "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(stereo_pcm.tobytes())
 
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"sine=frequency={f1}:duration=180:sample_rate=48000",
-        "-f", "lavfi", "-i", f"sine=frequency={f2}:duration=180:sample_rate=48000",
-        "-f", "lavfi", "-i", f"sine=frequency={f3}:duration=180:sample_rate=48000",
-        "-f", "lavfi", "-i", f"sine=frequency={f4}:duration=180:sample_rate=48000",
-        "-f", "lavfi", "-i", f"sine=frequency={f5}:duration=180:sample_rate=48000",
-        "-filter_complex",
-        "[0:a]volume=0.24,tremolo=f=0.22:d=0.35,pan=stereo|c0=0.8*c0|c1=0.6*c0[a0];"
-        "[1:a]volume=0.20,tremolo=f=0.18:d=0.40,pan=stereo|c0=0.6*c0|c1=0.8*c0[a1];"
-        "[2:a]volume=0.16,tremolo=f=0.15:d=0.42,pan=stereo|c0=0.75*c0|c1=0.65*c0[a2];"
-        "[3:a]volume=0.12,tremolo=f=0.12:d=0.45,pan=stereo|c0=0.65*c0|c1=0.75*c0[a3];"
-        "[4:a]volume=0.08,tremolo=f=0.28:d=0.50,pan=stereo|c0=0.5*c0|c1=0.9*c0[a4];"
-        "[a0][a1][a2][a3][a4]amix=inputs=5:duration=longest:normalize=0,"
-        "lowpass=f=1800,highpass=f=70,aecho=0.8:0.88:55|85:0.35|0.25,extrastereo=m=1.4,"
-        "afade=t=in:st=0:d=2.5,afade=t=out:st=177.5:d=2.5[outa]",
-        "-map", "[outa]", "-c:a", "aac", "-b:a", "256k", "-ar", "48000", "-ac", "2",
+        "-i", str(tmp_wav),
+        "-af", "lowpass=f=2400,highpass=f=65,extrastereo=m=1.35",
+        "-c:a", "aac", "-b:a", "256k", "-ar", "48000", "-ac", "2",
         str(out_m4a)
     ]
     subprocess.run(cmd, check=True)
+    tmp_wav.unlink(missing_ok=True)
 
 
 def verify_and_auto_fix_master(final_output: Path) -> dict:
@@ -698,6 +778,7 @@ def main():
         scenes = all_scenes
     else:
         BATCH_SIZE = 6
+        has_lead_in = False
         if shard_idx is not None and num_shards is not None:
             all_batches = [all_scenes[i:i + BATCH_SIZE] for i in range(0, len(all_scenes), BATCH_SIZE)]
             b_per_shard = max(1, (len(all_batches) + num_shards - 1) // num_shards)
@@ -705,8 +786,12 @@ def main():
             end_b = min(len(all_batches), (shard_idx + 1) * b_per_shard)
             shard_batches = all_batches[start_b:end_b]
             scenes = [s for b in shard_batches for s in b]
+            if start_b > 0 and all_batches[start_b - 1]:
+                lead_in_scene = all_batches[start_b - 1][-1]
+                scenes = [lead_in_scene] + scenes
+                has_lead_in = True
             print(f"============================================================", flush=True)
-            print(f"⚡ PARALLEL SHARD {shard_idx+1}/{num_shards} FOR [{proj_idx}] {slug} ({len(scenes)} scenes)", flush=True)
+            print(f"⚡ PARALLEL SHARD {shard_idx+1}/{num_shards} FOR [{proj_idx}] {slug} ({len(scenes)} scenes, lead_in={has_lead_in})", flush=True)
             print(f"============================================================", flush=True)
         else:
             start_b = 0
@@ -750,18 +835,26 @@ def main():
         norm_results.sort(key=lambda r: r["idx"])
         print(f"   ✔️ Conditioned {len(norm_results)} scenes in {time.time() - t1:.1f}s", flush=True)
 
-        # 3. Fused 6-clip Batch Xfade + Direct 4K 60fps MAX CINEMA Upscale
+        if has_lead_in and len(norm_results) > 1:
+            lead_in_norm = norm_results[0]
+            primary_norms = norm_results[1:]
+        else:
+            lead_in_norm = None
+            primary_norms = norm_results
+
+        # 3. Fused 6-clip Batch 1.0s Pure Opacity Cross-Dissolve (0%->100%) + Direct 4K 60fps MAX CINEMA Upscale
         t2 = time.time()
-        chunks = [norm_results[i:i + BATCH_SIZE] for i in range(0, len(norm_results), BATCH_SIZE)]
+        chunks = [primary_norms[i:i + BATCH_SIZE] for i in range(0, len(primary_norms), BATCH_SIZE)]
         total_batches = len(chunks)
-        print(f"\n🎞️ [3/5] Fused 0.5s Xfade + Direct 4K 60fps MAX CINEMA Upscale across {total_batches} batches...", flush=True)
+        print(f"\n🎞️ [3/5] Fused 1.0s Pure Opacity Cross-Dissolve (0%->100%) + Direct 4K 60fps MAX CINEMA Upscale across {total_batches} batches...", flush=True)
 
         batch_tasks = []
         for b_idx, chunk in enumerate(chunks):
             b_out = batch_dir / f"batch_4k60_{b_idx:03d}.mp4"
             global_b_idx = (start_b + b_idx) if shard_idx is not None else b_idx
             global_total_b = ((len(all_scenes) + BATCH_SIZE - 1) // BATCH_SIZE) if shard_idx is not None else total_batches
-            batch_tasks.append((global_b_idx, global_total_b, chunk, b_out, 0.5, global_b_idx * BATCH_SIZE))
+            prev_item = lead_in_norm if b_idx == 0 else chunks[b_idx - 1][-1]
+            batch_tasks.append((global_b_idx, global_total_b, chunk, b_out, 1.0, prev_item))
 
         rendered_batches = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -793,7 +886,7 @@ def main():
                     "raw_audio_mean_db": r["raw_audio_mean_db"],
                     "calibration": r["calibration"]
                 }
-                for r in norm_results
+                for r in primary_norms
             ]
             shard_json.write_text(json.dumps({
                 "proj_idx": proj_idx,
@@ -819,18 +912,18 @@ def main():
         shutil.rmtree(raw_dir, ignore_errors=True)
         print(f"   ✔️ Assembled 4K60 timeline ({total_dur:.2f}s = {total_dur/60:.2f} mins) in {time.time() - t2:.1f}s", flush=True)
 
-    # 4. Mix Continuous Cultural Festive Harmonic Bed via -stream_loop -1 & -c:v copy (~15 seconds!)
+    # 4. Mix Continuous Phase-Locked Symphonic Processional Score via -stream_loop -1 & -c:v copy
     t3 = time.time()
-    print(f"\n🎵 [4/5] Mixing Continuous 48kHz Stereo Parade Audio + Cultural Festive Bed ({project['music_style']}, 11%)...", flush=True)
+    print(f"\n🎵 [4/5] Mixing Continuous 48kHz Stereo Parade Ambiance + Uninterrupted Symphonic Processional Score ({project['music_style']}, 24%)...", flush=True)
     bgm_file = work_dir / "cultural_bgm.m4a"
     generate_cultural_festive_bgm(bgm_file, project["music_style"])
 
     final_mp4 = out_dir / f"{slug}_4K60_MAX_CINEMA.mp4"
-    fade_out_st = max(0.0, total_dur - 3.5)
+    fade_out_st = max(0.0, total_dur - 4.0)
     bgm_filter = (
-        f"[0:a]volume=1.0[orig_a];"
+        f"[0:a]volume=0.82[orig_a];"
         f"[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
-        f"volume=0.11,afade=t=in:st=0:d=2.5,afade=t=out:st={fade_out_st:.2f}:d=3.5[bgm_a];"
+        f"volume=0.24,afade=t=in:st=0:d=3.0,afade=t=out:st={fade_out_st:.2f}:d=4.0[bgm_a];"
         f"[orig_a][bgm_a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.92[final_a]"
     )
     subprocess.run([
