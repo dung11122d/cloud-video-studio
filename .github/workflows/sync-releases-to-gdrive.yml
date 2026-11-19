@@ -38,7 +38,7 @@ jobs:
           GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
         run: |
           set -e
-          SHARD_MP4=$(printf "b4v2_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
+          SHARD_MP4=$(printf "b4v3_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
           if gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${SHARD_MP4}$"; then
             echo "✅ ${SHARD_MP4} already exists on release — skipping!"
             exit 0
@@ -49,17 +49,17 @@ jobs:
 
           python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
             --manifest parade_batch4_manifest.json \
-            --shard-prefix b4v2_shard \
+            --shard-prefix b4v3_shard \
             --shard-idx "${{ matrix.shard }}" \
             --num-shards 6
 
-          gh release upload parade-4k60-max-cinema output_parade/b4v2_shard_* --clobber
+          gh release upload parade-4k60-max-cinema output_parade/b4v3_shard_* --clobber
 
   assemble-batch4-projects:
     if: ${{ always() && (github.event.inputs.target == 'batch4' || github.event.inputs.target == '') }}
     needs: render-batch4-shards
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -85,7 +85,7 @@ jobs:
         run: |
           set -e
           IDX="${{ matrix.proj }}"
-          SHARD_PREFIX=$(printf "b4v2_shard_%02d_" "$IDX")
+          SHARD_PREFIX=$(printf "b4v3_shard_%02d_" "$IDX")
           DRIVE_ID="1KOMnttdO_NvTWXCSnZU8B0y8DjOjnQa3"
 
           mkdir -p ~/.config/rclone output_parade
@@ -94,7 +94,7 @@ jobs:
           gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade --clobber
           python3 scripts/festival_parade_master_pipeline.py "$IDX" \
             --manifest parade_batch4_manifest.json \
-            --shard-prefix b4v2_shard \
+            --shard-prefix b4v3_shard \
             --assemble-shards 6
 
           sleep $(( IDX * 10 ))
@@ -142,7 +142,7 @@ jobs:
           GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
         run: |
           set -e
-          SHARD_MP4=$(printf "b3v2_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
+          SHARD_MP4=$(printf "b3v3_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
           if gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${SHARD_MP4}$"; then
             echo "✅ ${SHARD_MP4} already exists on release — skipping!"
             exit 0
@@ -153,17 +153,17 @@ jobs:
 
           python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
             --manifest parade_batch3_manifest.json \
-            --shard-prefix b3v2_shard \
+            --shard-prefix b3v3_shard \
             --shard-idx "${{ matrix.shard }}" \
             --num-shards 6
 
-          gh release upload parade-4k60-max-cinema output_parade/b3v2_shard_* --clobber
+          gh release upload parade-4k60-max-cinema output_parade/b3v3_shard_* --clobber
 
   assemble-batch3-projects:
     if: ${{ always() && github.event.inputs.target == 'batch3' }}
     needs: render-batch3-shards
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -189,7 +189,7 @@ jobs:
         run: |
           set -e
           IDX="${{ matrix.proj }}"
-          SHARD_PREFIX=$(printf "b3v2_shard_%02d_" "$IDX")
+          SHARD_PREFIX=$(printf "b3v3_shard_%02d_" "$IDX")
           DRIVE_ID="1_QCDdqFbGcN8bBJ105ZuHYDG-wdPy5Xq"
 
           mkdir -p ~/.config/rclone output_parade
@@ -198,7 +198,7 @@ jobs:
           gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade --clobber
           python3 scripts/festival_parade_master_pipeline.py "$IDX" \
             --manifest parade_batch3_manifest.json \
-            --shard-prefix b3v2_shard \
+            --shard-prefix b3v3_shard \
             --assemble-shards 6
 
           sleep $(( IDX * 10 ))
