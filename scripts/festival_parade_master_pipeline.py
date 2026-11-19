@@ -157,6 +157,13 @@ def probe_clip_duration(clip_path: Path) -> float:
 
 
 def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float, bitrate_kbps: int = 14000) -> dict:
+    """
+    OpenCV Auto-QA & AI Glitch/Distortion Eliminator:
+    1. Cuts out head static freeze frames and generation start artifacts.
+    2. Cuts out diffusion tail melting/decay (0.7s - 1.2s end-of-token collapse).
+    3. Detects internal morph/warp spikes and selects the longest, sharpest pristine segment (>=3.5s).
+    4. Auto-tunes CAS, deband, contrast, brightness, saturation, and gamma.
+    """
     result = {
         "st": 0.0,
         "et": round(raw_dur, 2),
@@ -185,8 +192,11 @@ def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float, bitrate_kbps: i
         lumas = []
         dyn_ranges = []
         sats = []
+        diffs = []
+        sampled_times = []
         tr_patches = []
-        step = max(int(fps // 2), 1)
+        prev_gray = None
+        step = max(int(fps // 4), 1)  # 4 samples/sec for temporal motion/warp tracking
 
         for idx in range(frame_count):
             if not cap.grab():
@@ -194,24 +204,61 @@ def analyze_and_calibrate_scene(clip_path: Path, raw_dur: float, bitrate_kbps: i
             if idx % step == 0 or idx == frame_count - 1:
                 ok, frame = cap.retrieve()
                 if ok and frame is not None:
-                    small = cv2.resize(frame, (320, 180))
+                    small = cv2.resize(frame, (160, 90))
                     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-                    sharpness.append((idx / fps, float(cv2.Laplacian(gray, cv2.CV_64F).var())))
+                    lap = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+                    diff = float(np.abs(gray.astype(np.float32) - prev_gray.astype(np.float32)).mean()) if prev_gray is not None else 0.0
+                    prev_gray = gray
+                    t_cur = idx / fps
+
+                    sharpness.append(lap)
+                    diffs.append(diff)
+                    sampled_times.append(t_cur)
                     lumas.append(float(gray.mean()))
                     p5, p95 = np.percentile(gray, [5, 95])
                     dyn_ranges.append(float(p95 - p5))
                     sats.append(float(hsv[:, :, 1].mean()))
-                    tr_patches.append(gray[3:14, 285:318].astype(np.float32))
+                    if gray.shape[0] >= 14 and gray.shape[1] >= 160:
+                        tr_patches.append(gray[2:10, 142:158].astype(np.float32))
         cap.release()
 
-        if sharpness:
-            avg_sharp = sum(s for _, s in sharpness) / len(sharpness)
-            result["sharpness"] = round(avg_sharp, 1)
-            if sharpness[-1][1] < avg_sharp * 0.42 and duration > 4.0:
-                result["et"] = round(duration - 0.25, 2)
-            else:
-                result["et"] = round(duration, 2)
+        mean_sharp = np.mean(sharpness) if sharpness else 120.0
+        median_diff = np.median(diffs[1:]) if len(diffs) > 1 else 10.0
+        result["sharpness"] = round(mean_sharp, 1)
+
+        # -------------------------------------------------------------
+        # 1. AI GLITCH & ARTIFACT FILTER (Start & End Trim)
+        # -------------------------------------------------------------
+        # Head trim: Cut 0.35s base to discard AI model initial generation seed/freeze
+        st = 0.35
+        for t, d in zip(sampled_times, diffs):
+            if t <= 1.2:
+                if d < 2.5:  # Static freeze before motion starts
+                    st = max(st, t + 0.15)
+                elif d > max(28.0, median_diff * 2.2):  # Early warp jump
+                    st = max(st, t + 0.15)
+
+        # Tail trim: AI video diffusion models almost ALWAYS melt/warp in the last 0.8s - 1.2s
+        # Enforce at least 0.65s tail cutoff to guarantee zero melted/distorted limbs
+        et = max(st + 2.5, duration - 0.70)
+        for t, lap, d in reversed(list(zip(sampled_times, sharpness, diffs))):
+            if t >= duration - 2.0:
+                if lap < mean_sharp * 0.58 or d > max(26.0, median_diff * 2.0):
+                    et = min(et, t - 0.15)
+
+        # Detect internal AI morphing/tearing within the clip
+        warp_zones = [t for t, d in zip(sampled_times, diffs) if (st < t < et and d > max(26.0, median_diff * 2.1))]
+        if warp_zones:
+            seg_a_len = warp_zones[0] - st
+            seg_b_len = et - warp_zones[-1]
+            if seg_b_len >= 3.5 and seg_b_len >= seg_a_len:
+                st = warp_zones[-1] + 0.20
+            elif seg_a_len >= 3.5:
+                et = warp_zones[0] - 0.15
+
+        result["st"] = round(max(0.0, st), 2)
+        result["et"] = round(min(duration, max(st + 2.5, et)), 2)
 
         # Adaptive Quality Tier & Compression Recovery based on per-clip Bitrate & Sharpness
         if bitrate_kbps < 11500 or result["sharpness"] < 180.0:
@@ -296,13 +343,6 @@ def normalize_parade_scene_worker(args_tuple) -> dict | None:
         "format=yuv420p"
     ])
     vf_chain = ",".join(vf_parts)
-
-    if s_num == 1:
-        vf_chain += (
-            ",split=2[sharp][blur_in];"
-            "[blur_in]gblur=sigma=20[blurred];"
-            "[blurred][sharp]blend=all_expr='if(lte(T,0.5), A*(1-T/0.5)+B*(T/0.5), B)'"
-        )
 
     usable_audio = has_audio and (max_v >= -45.0)
     if usable_audio:
@@ -460,16 +500,16 @@ def render_4k60_batch_worker(args_tuple) -> tuple[int, Path, float]:
         ]
     else:
         v_enc = [
-            "-c:v", "libx264", "-preset", "superfast",
+            "-c:v", "libx264", "-preset", "veryfast",
             "-profile:v", "high", "-level:v", "5.2",
             "-crf", "15",
             "-maxrate", "45M", "-bufsize", "90M",
             "-pix_fmt", "yuv420p",
-            "-threads", "2"
+            "-threads", "0"
         ]
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-filter_threads", "1", "-filter_complex_threads", "1",
+        "-filter_threads", "0", "-filter_complex_threads", "0",
         *inputs,
         "-filter_complex", filter_complex,
         "-map", "[vout]", "-map", "[aout]",
@@ -698,6 +738,25 @@ def build_seo_metadata(project: dict, total_duration: float, qa_summary: dict) -
     }
 
 
+def curate_viral_parade_scenes(scenes: list[dict]) -> list[dict]:
+    """
+    Structures the parade into an irresistible viral timeline:
+    1. Cold-Open Climax Hook (Top 3 peak spectacle shots from late night/illumination):
+       - Scene 175 (Peak Grand Night Palace / Confetti Cannons / Illuminated Skyline)
+       - Scene 100 (Golden Hour Herald / Sunset Angel / Royal fanfare)
+       - Scene 75 (Vibrant fantasy float / Candyland / Crystal palace)
+    2. Main Ceremonial Parade Journey:
+       - Full chronological procession from opening daytime fanfare to the grand night finale!
+    Preserves exact 180 scenes count so shard partitioning is 100% harmonious!
+    """
+    if len(scenes) < 175:
+        return scenes
+    hook_indices = (174, 99, 74)  # 0-indexed for scenes 175, 100, 75
+    hook_scenes = [scenes[i] for i in hook_indices if i < len(scenes)]
+    remaining = [s for idx, s in enumerate(scenes) if idx not in hook_indices]
+    return hook_scenes + remaining
+
+
 def main():
     t0 = time.time()
     if len(sys.argv) < 2:
@@ -729,7 +788,7 @@ def main():
         sys.exit(1)
 
     slug = project["slug"]
-    all_scenes = project["scenes"]
+    all_scenes = curate_viral_parade_scenes(project["scenes"])
     work_dir = Path("work_parade") / slug
     raw_dir = work_dir / "raw"
     graded_dir = work_dir / "graded"
