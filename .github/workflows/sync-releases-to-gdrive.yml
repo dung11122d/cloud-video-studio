@@ -67,9 +67,9 @@ jobs:
           for attempt in 1 2 3 4 5; do
             echo "=== Upload attempt $attempt/5 to Google Drive ($DRIVE_ID) ==="
             if rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
-              --transfers 1 --checkers 2 --drive-chunk-size 256M --multi-thread-streams 0 \
-              --bwlimit 25M --drive-upload-cutoff 1000M --tpslimit 10 \
-              --retries 8 --retries-sleep 30s -v; then
+              --transfers 1 --checkers 2 --drive-chunk-size 128M --multi-thread-streams 0 \
+              --bwlimit 25M --tpslimit 10 --timeout 15m --contimeout 2m \
+              --retries 3 --retries-sleep 20s -v; then
               UPLOAD_SUCCESS=1
               echo "Google Drive upload SUCCEEDED!"
               break
