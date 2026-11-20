@@ -30,7 +30,7 @@ jobs:
       - name: Install Rclone & Headless Stack
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rclone python3-pip
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg rclone python3-pip
           pip3 install --break-system-packages -q opencv-python-headless numpy
 
       - name: Assemble 6 Shards & Upload Batch4 Project 04 to Google Drive
