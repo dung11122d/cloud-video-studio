@@ -4,60 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Target batch (all_missing, batch4_missing, batch3_missing, batch4, batch3)"
+        description: "Target batch (assemble_missing, all_missing, batch4_missing, batch3_missing, batch4, batch3)"
         required: false
-        default: "all_missing"
+        default: "assemble_missing"
+
+permissions:
+  contents: write
+  actions: write
 
 jobs:
   # =========================================================================
-  # BATCH 4 - MISSING PROJECTS (Projects 2, 3, 4 -> Google Drive 1KOMnttdO_NvTWXCSnZU8B0y8DjOjnQa3)
+  # BATCH 4 - ASSEMBLE MISSING PROJECTS (Projects 2, 3, 4 -> Google Drive 1KOMnttdO_NvTWXCSnZU8B0y8DjOjnQa3)
   # =========================================================================
-  render-batch4-missing-shards:
-    if: ${{ github.event.inputs.target == 'all_missing' || github.event.inputs.target == 'batch4_missing' || github.event.inputs.target == '' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        proj: [2, 3, 4]
-        shard: [0, 1, 2, 3, 4, 5]
-    steps:
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
-
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          pip3 install --break-system-packages -q gdown yt-dlp
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Render 1.0s Opacity-Blend 4K60 Shard ${{ matrix.shard }}/6 for Batch4 Project 0${{ matrix.proj }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          SHARD_MP4=$(printf "b4v3_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
-          if gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${SHARD_MP4}$"; then
-            echo "Shard ${SHARD_MP4} already exists on release - skipping!"
-            exit 0
-          fi
-
-          mkdir -p ~/.config/rclone
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
-            --manifest parade_batch4_manifest.json \
-            --shard-prefix b4v3_shard \
-            --shard-idx "${{ matrix.shard }}" \
-            --num-shards 6
-
-          gh release upload parade-4k60-max-cinema output_parade/b4v3_shard_* --clobber
-
   assemble-batch4-missing-projects:
-    if: ${{ always() && (github.event.inputs.target == 'all_missing' || github.event.inputs.target == 'batch4_missing' || github.event.inputs.target == '') }}
-    needs: render-batch4-missing-shards
+    if: ${{ github.event.inputs.target == 'assemble_missing' || github.event.inputs.target == 'all_missing' || github.event.inputs.target == 'batch4_missing' || github.event.inputs.target == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -76,8 +36,8 @@ jobs:
       - name: Install Multimedia & Rclone Stack
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
+          sudo apt-get install -y -qq ffmpeg rclone curl unzip python3-pip python3-opencv python3-numpy
+          pip3 install --break-system-packages -q gdown yt-dlp
 
       - name: Assemble 6 Shards & Upload Batch4 Project 0${{ matrix.proj }} to Google Drive
         env:
@@ -136,54 +96,10 @@ jobs:
           echo "Batch 4 Project $IDX successfully completed and synced to Google Drive!"
 
   # =========================================================================
-  # BATCH 3 - MISSING PROJECT (Project 3 India Pushkar -> Google Drive 1_QCDdqFbGcN8bBJ105ZuHYDG-wdPy5Xq)
+  # BATCH 3 - ASSEMBLE MISSING PROJECT (Project 3 India Pushkar -> Google Drive 1_QCDdqFbGcN8bBJ105ZuHYDG-wdPy5Xq)
   # =========================================================================
-  render-batch3-missing-shards:
-    if: ${{ github.event.inputs.target == 'all_missing' || github.event.inputs.target == 'batch3_missing' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        proj: [3]
-        shard: [0, 1, 2, 3, 4, 5]
-    steps:
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
-
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          pip3 install --break-system-packages -q gdown yt-dlp
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Render 1.0s Opacity-Blend 4K60 Shard ${{ matrix.shard }}/6 for Batch3 Project 0${{ matrix.proj }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          SHARD_MP4=$(printf "b3v3_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
-          if gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${SHARD_MP4}$"; then
-            echo "Shard ${SHARD_MP4} already exists on release - skipping!"
-            exit 0
-          fi
-
-          mkdir -p ~/.config/rclone
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
-            --manifest parade_batch3_manifest.json \
-            --shard-prefix b3v3_shard \
-            --shard-idx "${{ matrix.shard }}" \
-            --num-shards 6
-
-          gh release upload parade-4k60-max-cinema output_parade/b3v3_shard_* --clobber
-
   assemble-batch3-missing-projects:
-    if: ${{ always() && (github.event.inputs.target == 'all_missing' || github.event.inputs.target == 'batch3_missing') }}
-    needs: render-batch3-missing-shards
+    if: ${{ github.event.inputs.target == 'assemble_missing' || github.event.inputs.target == 'all_missing' || github.event.inputs.target == 'batch3_missing' || github.event.inputs.target == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -201,8 +117,8 @@ jobs:
       - name: Install Multimedia & Rclone Stack
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
+          sudo apt-get install -y -qq ffmpeg rclone curl unzip python3-pip python3-opencv python3-numpy
+          pip3 install --break-system-packages -q gdown yt-dlp
 
       - name: Assemble 6 Shards & Upload Batch3 Project 0${{ matrix.proj }} to Google Drive
         env:
@@ -261,29 +177,26 @@ jobs:
           echo "Batch 3 Project $IDX successfully completed and synced to Google Drive!"
 
   # =========================================================================
-  # BATCH 4 - FULL RE-RENDER (Projects 1..5)
+  # OPTIONAL RENDER JOBS (Only if explicitly requested)
   # =========================================================================
-  render-batch4-shards:
-    if: ${{ github.event.inputs.target == 'batch4' }}
+  render-batch4-missing-shards:
+    if: ${{ github.event.inputs.target == 'render_all' || github.event.inputs.target == 'batch4' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        proj: [1, 2, 3, 4, 5]
+        proj: [2, 3, 4]
         shard: [0, 1, 2, 3, 4, 5]
     steps:
       - name: Checkout Studio Repository
         uses: actions/checkout@v4
-
       - name: Install Multimedia & Rclone Stack
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
+          sudo apt-get install -y -qq ffmpeg rclone curl unzip python3-pip python3-opencv python3-numpy
           pip3 install --break-system-packages -q gdown yt-dlp
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Render 1.0s Opacity-Blend 4K60 Shard ${{ matrix.shard }}/6 for Batch4 Project 0${{ matrix.proj }}
+      - name: Render Shard
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
@@ -294,202 +207,11 @@ jobs:
             echo "Shard ${SHARD_MP4} already exists on release - skipping!"
             exit 0
           fi
-
           mkdir -p ~/.config/rclone
           echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
           python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
             --manifest parade_batch4_manifest.json \
             --shard-prefix b4v3_shard \
             --shard-idx "${{ matrix.shard }}" \
             --num-shards 6
-
           gh release upload parade-4k60-max-cinema output_parade/b4v3_shard_* --clobber
-
-  assemble-batch4-projects:
-    if: ${{ always() && github.event.inputs.target == 'batch4' }}
-    needs: render-batch4-shards
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        proj: [1, 2, 3, 4, 5]
-    steps:
-      - name: Free Runner Disk Space (35+ GB)
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
-
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Assemble 6 Shards & Upload Batch4 Project 0${{ matrix.proj }} to Google Drive
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          IDX="${{ matrix.proj }}"
-          SHARD_PREFIX=$(printf "b4v3_shard_%02d_" "$IDX")
-          DRIVE_ID="1KOMnttdO_NvTWXCSnZU8B0y8DjOjnQa3"
-
-          mkdir -p ~/.config/rclone output_parade
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade --clobber
-          python3 scripts/festival_parade_master_pipeline.py "$IDX" \
-            --manifest parade_batch4_manifest.json \
-            --shard-prefix b4v3_shard \
-            --assemble-shards 6
-
-          FINAL_MP4=$(ls output_parade/*_4K60_MAX_CINEMA.mp4 2>/dev/null | head -n 1)
-          if [ -z "$FINAL_MP4" ]; then
-            echo "ERROR: Final assembled MP4 not found in output_parade/!"
-            exit 1
-          fi
-
-          UPLOAD_SUCCESS=0
-          for attempt in 1 2 3 4 5; do
-            if rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
-              --transfers 1 --checkers 2 --drive-chunk-size 256M --multi-thread-streams 0 \
-              --drive-upload-cutoff 1000M --tpslimit 10 \
-              --retries 8 --retries-sleep 30s -v; then
-              UPLOAD_SUCCESS=1
-              break
-            fi
-            sleep 60
-          done
-
-          if [ "$UPLOAD_SUCCESS" -ne 1 ]; then
-            echo "CRITICAL: Upload to Google Drive failed!"
-            exit 1
-          fi
-
-          for s in 00 01 02 03 04 05; do
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.mp4" -y || true
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.json" -y || true
-          done
-
-  # =========================================================================
-  # BATCH 3 - FULL RE-RENDER (Projects 1..6)
-  # =========================================================================
-  render-batch3-shards:
-    if: ${{ github.event.inputs.target == 'batch3' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        proj: [1, 2, 3, 4, 5, 6]
-        shard: [0, 1, 2, 3, 4, 5]
-    steps:
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
-
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          pip3 install --break-system-packages -q gdown yt-dlp
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Render 1.0s Opacity-Blend 4K60 Shard ${{ matrix.shard }}/6 for Batch3 Project 0${{ matrix.proj }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          SHARD_MP4=$(printf "b3v3_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
-          if gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${SHARD_MP4}$"; then
-            echo "Shard ${SHARD_MP4} already exists on release - skipping!"
-            exit 0
-          fi
-
-          mkdir -p ~/.config/rclone
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
-            --manifest parade_batch3_manifest.json \
-            --shard-prefix b3v3_shard \
-            --shard-idx "${{ matrix.shard }}" \
-            --num-shards 6
-
-          gh release upload parade-4k60-max-cinema output_parade/b3v3_shard_* --clobber
-
-  assemble-batch3-projects:
-    if: ${{ always() && github.event.inputs.target == 'batch3' }}
-    needs: render-batch3-shards
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        proj: [1, 2, 3, 4, 5, 6]
-    steps:
-      - name: Free Runner Disk Space (35+ GB)
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
-
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl unzip python3-pip python3-opencv python3-numpy
-          curl -fsSL https://rclone.org/install.sh | sudo bash || sudo apt-get install -y -qq rclone
-
-      - name: Assemble 6 Shards & Upload Batch3 Project 0${{ matrix.proj }} to Google Drive
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          IDX="${{ matrix.proj }}"
-          SHARD_PREFIX=$(printf "b3v3_shard_%02d_" "$IDX")
-          DRIVE_ID="1_QCDdqFbGcN8bBJ105ZuHYDG-wdPy5Xq"
-
-          mkdir -p ~/.config/rclone output_parade
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade --clobber
-          python3 scripts/festival_parade_master_pipeline.py "$IDX" \
-            --manifest parade_batch3_manifest.json \
-            --shard-prefix b3v3_shard \
-            --assemble-shards 6
-
-          FINAL_MP4=$(ls output_parade/*_4K60_MAX_CINEMA.mp4 2>/dev/null | head -n 1)
-          if [ -z "$FINAL_MP4" ]; then
-            echo "ERROR: Final assembled MP4 not found in output_parade/!"
-            exit 1
-          fi
-
-          UPLOAD_SUCCESS=0
-          for attempt in 1 2 3 4 5; do
-            if rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
-              --transfers 1 --checkers 2 --drive-chunk-size 256M --multi-thread-streams 0 \
-              --drive-upload-cutoff 1000M --tpslimit 10 \
-              --retries 8 --retries-sleep 30s -v; then
-              UPLOAD_SUCCESS=1
-              break
-            fi
-            sleep 60
-          done
-
-          if [ "$UPLOAD_SUCCESS" -ne 1 ]; then
-            echo "CRITICAL: Upload to Google Drive failed!"
-            exit 1
-          fi
-
-          for s in 00 01 02 03 04 05; do
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.mp4" -y || true
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.json" -y || true
-          done
