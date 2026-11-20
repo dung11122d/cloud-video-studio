@@ -4,13 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Target batch (assemble_missing, assemble_project3, all_missing, batch4, batch3)"
+        description: "Target batch (assemble_project4_only, assemble_missing, assemble_project3, all_missing, batch4, batch3)"
         required: false
-        default: "assemble_missing"
-      project_ids:
-        description: "Comma-separated project IDs for assemble (e.g. '3' or '3,4' or '2,3,4')"
-        required: false
-        default: "3"
+        default: "assemble_project4_only"
 
 permissions:
   contents: write
@@ -18,17 +14,12 @@ permissions:
 
 jobs:
   # =========================================================================
-  # BATCH 4 - ASSEMBLE SPECIFIC / MISSING PROJECTS
+  # ASSEMBLE ONLY PROJECT 4 (LONDON REGENT STREET) - THE FINAL 11th VIDEO!
   # =========================================================================
-  assemble-batch4-missing-projects:
-    if: ${{ github.event.inputs.target == 'assemble_missing' || github.event.inputs.target == 'all_missing' || github.event.inputs.target == '' }}
+  assemble-project4-only:
+    if: ${{ github.event.inputs.target == 'assemble_project4_only' || github.event.inputs.target == 'assemble_missing' || github.event.inputs.target == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        proj: [3, 4]
     steps:
       - name: Free Runner Disk Space (35+ GB)
         run: |
@@ -43,20 +34,20 @@ jobs:
           sudo apt-get install -y -qq ffmpeg rclone curl unzip python3-pip python3-opencv python3-numpy
           pip3 install --break-system-packages -q gdown yt-dlp
 
-      - name: Assemble 6 Shards & Upload Batch4 Project 0${{ matrix.proj }} to Google Drive
+      - name: Assemble 6 Shards & Upload Batch4 Project 04 to Google Drive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
         run: |
           set -e
-          IDX="${{ matrix.proj }}"
-          SHARD_PREFIX=$(printf "b4v3_shard_%02d_" "$IDX")
+          IDX=4
+          SHARD_PREFIX="b4v3_shard_04_"
           DRIVE_ID="1KOMnttdO_NvTWXCSnZU8B0y8DjOjnQa3"
 
           mkdir -p ~/.config/rclone output_parade
           echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
 
-          echo "Downloading shards for Batch 4 Project $IDX..."
+          echo "Downloading shards for Batch 4 Project 04 (London)..."
           gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade --clobber
 
           echo "Assembling 6 shards..."
@@ -97,81 +88,4 @@ jobs:
             gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.mp4" -y || true
             gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.json" -y || true
           done
-          echo "Batch 4 Project $IDX successfully completed and synced to Google Drive!"
-
-  # =========================================================================
-  # ASSEMBLE ONLY PROJECT 3 (FRANCE LYON)
-  # =========================================================================
-  assemble-project3-only:
-    if: ${{ github.event.inputs.target == 'assemble_project3' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - name: Free Runner Disk Space (35+ GB)
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-
-      - name: Checkout Studio Repository
-        uses: actions/checkout@v4
-
-      - name: Install Multimedia & Rclone Stack
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg rclone curl unzip python3-pip python3-opencv python3-numpy
-          pip3 install --break-system-packages -q gdown yt-dlp
-
-      - name: Assemble 6 Shards & Upload Batch4 Project 03 to Google Drive
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
-        run: |
-          set -e
-          IDX=3
-          SHARD_PREFIX="b4v3_shard_03_"
-          DRIVE_ID="1KOMnttdO_NvTWXCSnZU8B0y8DjOjnQa3"
-
-          mkdir -p ~/.config/rclone output_parade
-          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
-
-          echo "Downloading shards for Batch 4 Project 03..."
-          gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade --clobber
-
-          echo "Assembling 6 shards..."
-          python3 scripts/festival_parade_master_pipeline.py "$IDX" \
-            --manifest parade_batch4_manifest.json \
-            --shard-prefix b4v3_shard \
-            --assemble-shards 6
-
-          FINAL_MP4=$(ls output_parade/*_4K60_MAX_CINEMA.mp4 2>/dev/null | head -n 1)
-          if [ -z "$FINAL_MP4" ]; then
-            echo "ERROR: Final assembled MP4 not found in output_parade/!"
-            exit 1
-          fi
-          echo "Found assembled MP4: $FINAL_MP4 ($(du -h "$FINAL_MP4" | cut -f1))"
-
-          UPLOAD_SUCCESS=0
-          for attempt in 1 2 3 4 5; do
-            echo "=== Upload attempt $attempt/5 to Google Drive ($DRIVE_ID) ==="
-            if rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
-              --transfers 1 --checkers 2 --drive-chunk-size 256M --multi-thread-streams 0 \
-              --bwlimit 25M --drive-upload-cutoff 1000M --tpslimit 10 \
-              --retries 8 --retries-sleep 30s -v; then
-              UPLOAD_SUCCESS=1
-              echo "Google Drive upload SUCCEEDED!"
-              break
-            fi
-            echo "Upload attempt $attempt failed. Waiting 60s cooldown..."
-            sleep 60
-          done
-
-          if [ "$UPLOAD_SUCCESS" -ne 1 ]; then
-            echo "CRITICAL: Upload to Google Drive failed after 5 attempts!"
-            exit 1
-          fi
-
-          echo "Cleaning up temporary release shard assets..."
-          for s in 00 01 02 03 04 05; do
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.mp4" -y || true
-            gh release delete-asset parade-4k60-max-cinema "${SHARD_PREFIX}${s}.json" -y || true
-          done
-          echo "Batch 4 Project 03 successfully completed and synced to Google Drive!"
+          echo "Batch 4 Project 04 (London) successfully completed and synced to Google Drive!"
