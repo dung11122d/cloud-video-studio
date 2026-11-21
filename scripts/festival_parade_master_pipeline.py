@@ -544,6 +544,10 @@ def generate_cultural_festive_bgm(out_m4a: Path, music_style: str):
         "american_broadway_brass_fanfare": 155.56,       # Eb Major Grand Avenue Parade Fanfare
         "french_lumiere_orchestral_chimes": 164.81,      # E Major Luminous Cathedral Processional
         "british_royal_westend_christmas_chimes": 146.83,# D Major Royal Regent Street Holiday Brass
+        "belgian_binche_carnival_drums_brass": 146.83,   # D Major Belgian Carnival Brass & Drum
+        "brazilian_natal_luz_symphonic_samba_chimes": 164.81, # E Major Symphonic Samba Festive Chimes
+        "portuguese_madeira_carnival_samba_cavalcade": 146.83,# D Major Madeira Flower Samba Cavalcade
+        "swiss_basel_fasnacht_piccolo_drum_procession": 174.61,# F Major Basel Fasnacht Piccolo & Drum
     }
     root = style_roots.get(music_style, 146.83)
 
