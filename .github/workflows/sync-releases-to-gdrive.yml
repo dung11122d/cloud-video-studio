@@ -89,10 +89,10 @@ jobs:
     needs: render-batch5-shards
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 1
       matrix:
         proj: [1, 2, 3, 4, 5, 6, 7]
     steps:
@@ -166,16 +166,16 @@ jobs:
           for attempt in 1 2 3 4 5; do
             echo "=== Upload attempt $attempt/5 to Google Drive ($DRIVE_ID) ==="
             if rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
-              --transfers 1 --checkers 2 --drive-chunk-size 128M --multi-thread-streams 0 \
-              --bwlimit 40M --tpslimit 10 --timeout 15m --contimeout 2m \
+              --transfers 1 --checkers 2 --drive-chunk-size 64M --multi-thread-streams 0 \
+              --tpslimit 10 --timeout 15m --contimeout 2m \
               --retries 3 --retries-sleep 20s --stats 30s -v; then
               UPLOAD_SUCCESS=1
               echo "Google Drive upload to Folder 3 SUCCEEDED!"
 
               echo "Mirroring to Master Unified Folder (1ko72inz1CYBvwYQ3RDnSkYmi1uS50ae9)..."
               rclone copy output_parade/ "gdrive,root_folder_id=1ko72inz1CYBvwYQ3RDnSkYmi1uS50ae9:" \
-                --transfers 1 --checkers 2 --drive-chunk-size 128M --multi-thread-streams 0 \
-                --bwlimit 40M --tpslimit 10 --timeout 15m --contimeout 2m \
+                --transfers 1 --checkers 2 --drive-chunk-size 64M --multi-thread-streams 0 \
+                --tpslimit 10 --timeout 15m --contimeout 2m \
                 --retries 3 --retries-sleep 20s --stats 30s -v || true
               break
             fi
