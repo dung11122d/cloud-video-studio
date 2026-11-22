@@ -37,16 +37,35 @@ ALL_XFADE_TRANSITIONS = [
 ]
 
 
-def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
-    scene_meta, dest_dir = args_tuple
-    s_num = scene_meta["num"]
+def download_single_drive_file(args_tuple) -> tuple[int, int, dict, Path] | None:
+    if len(args_tuple) == 3:
+        order_idx, scene_meta, dest_dir = args_tuple
+    else:
+        order_idx = 0
+        scene_meta, dest_dir = args_tuple
+
+    s_num = scene_meta.get("num")
+    if s_num is None:
+        name = scene_meta.get("name", "")
+        m = re.search(r'\d+', name)
+        s_num = int(m.group(0)) if m else (order_idx + 1)
+
     file_id = scene_meta["id"]
-    out_path = dest_dir / f"raw_{s_num:03d}.mp4"
+    out_path = dest_dir / f"raw_{order_idx:03d}_{s_num:03d}.mp4"
     if out_path.exists() and out_path.stat().st_size > 80_000:
-        return (s_num, scene_meta, out_path)
+        return (order_idx, s_num, scene_meta, out_path)
 
     # 0a. Authenticated Google Drive API v3 Bearer Token (100% immune to anonymous quota!)
     gdrive_token = os.environ.get("GDRIVE_ACCESS_TOKEN", "").strip()
+    rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
+    if not gdrive_token and rclone_conf.exists():
+        try:
+            m = re.search(r'token\s*=\s*(\{.*?\})', rclone_conf.read_text(encoding="utf-8"))
+            if m:
+                gdrive_token = json.loads(m.group(1)).get("access_token", "")
+        except Exception:
+            pass
+
     if gdrive_token:
         try:
             api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
@@ -55,12 +74,11 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
                 data = resp.read()
                 if len(data) > 80_000:
                     out_path.write_bytes(data)
-                    return (s_num, scene_meta, out_path)
+                    return (order_idx, s_num, scene_meta, out_path)
         except Exception:
             pass
 
     # 0b. Optional rclone backend copyid
-    rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
     if rclone_conf.exists() and rclone_conf.stat().st_size > 20:
         try:
             subprocess.run(
@@ -68,7 +86,7 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
                 check=False, timeout=60, capture_output=True
             )
             if out_path.exists() and out_path.stat().st_size > 80_000:
-                return (s_num, scene_meta, out_path)
+                return (order_idx, s_num, scene_meta, out_path)
         except Exception:
             pass
 
@@ -83,7 +101,7 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
                 data = resp.read()
                 if len(data) > 80_000 and not data[:20].lstrip().startswith((b"<!DOCTYPE", b"<html")):
                     out_path.write_bytes(data)
-                    return (s_num, scene_meta, out_path)
+                    return (order_idx, s_num, scene_meta, out_path)
         except Exception:
             pass
 
@@ -106,7 +124,7 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
                 check=False, timeout=120
             )
             if out_path.exists() and out_path.stat().st_size > 80_000:
-                return (s_num, scene_meta, out_path)
+                return (order_idx, s_num, scene_meta, out_path)
         except Exception:
             time.sleep(3 * (attempt + 1))
 
@@ -117,7 +135,7 @@ def download_single_drive_file(args_tuple) -> tuple[int, dict, Path] | None:
             check=False, timeout=60
         )
         if out_path.exists() and out_path.stat().st_size > 80_000:
-            return (s_num, scene_meta, out_path)
+            return (order_idx, s_num, scene_meta, out_path)
     except Exception as e:
         print(f"  [WARN] Failed downloading scene {s_num} ({file_id}): {e}", flush=True)
 
@@ -869,7 +887,7 @@ def main():
         rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
         dl_workers = 16 if (rclone_conf.exists() or os.environ.get("GDRIVE_ACCESS_TOKEN")) else 4
         print(f"\n📥 [1/5] Multi-threaded Downloading {len(scenes)} raw clips ({dl_workers} threads)...", flush=True)
-        dl_tasks = [(s, raw_dir) for s in scenes]
+        dl_tasks = [(i, s, raw_dir) for i, s in enumerate(scenes)]
         downloaded = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=dl_workers) as pool:
             for res in pool.map(download_single_drive_file, dl_tasks):
@@ -885,7 +903,7 @@ def main():
         t1 = time.time()
         print(f"\n🔍 [2/5] Multi-threaded OpenCV Auto-QA & 48kHz True Stereo Mastering ({len(downloaded)} scenes, 8 threads)...", flush=True)
         norm_tasks = [
-            (pos_idx, item[0], item[1], item[2], graded_dir)
+            (pos_idx, item[1], item[2], item[3], graded_dir)
             for pos_idx, item in enumerate(downloaded, 1)
         ]
         norm_results = []
