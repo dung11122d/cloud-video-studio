@@ -48,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SHARD_MP4=$(printf "b5_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
+          SHARD_MP4=$(printf "b6_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
           if gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${SHARD_MP4}$"; then
             echo "Shard ${SHARD_MP4} already exists on GitHub Release - skipping render!"
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -74,13 +74,13 @@ jobs:
           echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
 
           python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
-            --manifest parade_batch5_manifest.json \
-            --shard-prefix b5_shard \
+            --manifest parade_batch6_manifest.json \
+            --shard-prefix b6_shard \
             --shard-idx "${{ matrix.shard }}" \
             --num-shards 6
 
           echo "Uploading rendered shard to GitHub Release..."
-          gh release upload parade-4k60-max-cinema output_parade/b5_shard_* --clobber
+          gh release upload parade-4k60-max-cinema output_parade/b6_shard_* --clobber
 
   # =========================================================================
   # 2. ASSEMBLE 6 SHARDS & SYNC DIRECTLY TO GOOGLE DRIVE
@@ -125,8 +125,8 @@ jobs:
         run: |
           set -e
           IDX="${{ matrix.proj }}"
-          SHARD_PREFIX=$(printf "b5_shard_%02d_" "$IDX")
-          DRIVE_ID="1akFdFkw3zjh4jukGMgRRn7ujATdAXb_o"
+          SHARD_PREFIX=$(printf "b6_shard_%02d_" "$IDX")
+          DRIVE_ID="1wHhx_drQd2ojQN4ujnXkOaGx2XjwOI33"
 
           mkdir -p ~/.config/rclone output_parade
           echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
@@ -151,8 +151,8 @@ jobs:
 
           echo "Assembling 6 shards + Mixing continuous 48kHz audio score..."
           python3 scripts/festival_parade_master_pipeline.py "$IDX" \
-            --manifest parade_batch5_manifest.json \
-            --shard-prefix b5_shard \
+            --manifest parade_batch6_manifest.json \
+            --shard-prefix b6_shard \
             --assemble-shards 6
 
           FINAL_MP4=$(ls output_parade/*_4K60_MAX_CINEMA.mp4 2>/dev/null | head -n 1)
