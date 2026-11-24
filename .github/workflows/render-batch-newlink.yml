@@ -162,10 +162,14 @@ jobs:
           fi
           echo "Found assembled MP4: $FINAL_MP4 ($(du -h "$FINAL_MP4" | cut -f1))"
 
+          echo "Purging raw shards to prevent Google Drive 429 quota exhaustion..."
+          rm -f output_parade/${SHARD_PREFIX}*
+
           UPLOAD_SUCCESS=0
           for attempt in 1 2 3 4 5; do
             echo "=== Upload attempt $attempt/5 to Google Drive ($DRIVE_ID) ==="
             if rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA/" \
+              --include "*_4K60_MAX_CINEMA.mp4" --include "*_QA_Report.json" --include "*_SEO_meta.json" \
               --transfers 1 --checkers 2 --drive-chunk-size 64M --multi-thread-streams 0 \
               --tpslimit 10 --timeout 15m --contimeout 2m \
               --retries 3 --retries-sleep 20s --stats 30s -v; then
@@ -174,6 +178,7 @@ jobs:
 
               echo "Mirroring to Master Unified Folder (1ko72inz1CYBvwYQ3RDnSkYmi1uS50ae9)..."
               rclone copy output_parade/ "gdrive,root_folder_id=1ko72inz1CYBvwYQ3RDnSkYmi1uS50ae9:" \
+                --include "*_4K60_MAX_CINEMA.mp4" --include "*_QA_Report.json" --include "*_SEO_meta.json" \
                 --transfers 1 --checkers 2 --drive-chunk-size 64M --multi-thread-streams 0 \
                 --tpslimit 10 --timeout 15m --contimeout 2m \
                 --retries 3 --retries-sleep 20s --stats 30s -v || true
