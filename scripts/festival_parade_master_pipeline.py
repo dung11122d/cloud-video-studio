@@ -566,6 +566,12 @@ def generate_cultural_festive_bgm(out_m4a: Path, music_style: str):
         "brazilian_natal_luz_symphonic_samba_chimes": 164.81, # E Major Symphonic Samba Festive Chimes
         "portuguese_madeira_carnival_samba_cavalcade": 146.83,# D Major Madeira Flower Samba Cavalcade
         "swiss_basel_fasnacht_piccolo_drum_procession": 174.61,# F Major Basel Fasnacht Piccolo & Drum
+        "retro_gaming_orchestral_adventure": 130.81,     # C Major Mario Overworld Symphonic Adventure
+        "retro_gaming_chiptune_orchestra": 130.81,       # C Major Mario Chiptune & Symphonic Brass
+        "chinese_lunar_dragon_guzheng_drums": 130.81,    # C Major Pentatonic Golden Dragon Cavalcade
+        "celtic_irish_bagpipe_brass_march": 146.83,      # D Major Celtic Bagpipe & Marching Brass
+        "korean_lantern_festival_kayagum_orchestra": 146.83, # D Major Cheonggyecheon Luminous Kayagum
+        "korean_spring_blossom_traditional_court": 130.81,   # C Major Jinhae Spring Blossom Court
     }
     root = style_roots.get(music_style, 146.83)
 
@@ -803,6 +809,8 @@ def main():
 
     manifest_path = Path(__file__).parent / manifest_name
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    if isinstance(manifest, dict) and "projects" in manifest:
+        manifest = manifest["projects"]
 
     project = next((p for p in manifest if p["idx"] == proj_idx), None)
     if not project:
