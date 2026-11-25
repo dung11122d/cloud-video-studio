@@ -1,0 +1,176 @@
+name: Direct Cloud-to-Drive 4K60 MAX CINEMA - New Link Batch 3 (Beigang, Donggang, Viareggio, Yokohama, Pushkar, Amsterdam)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target (all, assemble_only, 1, 2, 3, 4, 5, 6)"
+        required: false
+        default: "all"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  # =========================================================================
+  # 1. RENDER 4K60 SHARDS IN PARALLEL (6 PROJECTS: 1..6, 6 SHARDS EACH = 36 JOBS)
+  # =========================================================================
+  render-newlink3-shards:
+    if: ${{ github.event.inputs.target != 'assemble_only' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        proj: [1, 2, 3, 4, 5, 6]
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: Filter Target Project
+        run: |
+          TARGET="${{ github.event.inputs.target }}"
+          CURRENT_PROJ="${{ matrix.proj }}"
+          if [ -n "$TARGET" ] && [ "$TARGET" != "all" ] && [ "$TARGET" != "$CURRENT_PROJ" ]; then
+            echo "Skipping Project $CURRENT_PROJ (Target is $TARGET)"
+            exit 0
+          fi
+
+      - name: Free Runner Disk Space (35+ GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
+      - name: Checkout Studio Repository
+        uses: actions/checkout@v4
+
+      - name: Check If Shard Already Rendered
+        id: check_shard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHARD_MP4=$(printf "newlink3_shard_%02d_%02d.mp4" "${{ matrix.proj }}" "${{ matrix.shard }}")
+          if gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${SHARD_MP4}$"; then
+            echo "Shard ${SHARD_MP4} already exists on GitHub Release - skipping render!"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Multimedia Stack
+        if: steps.check_shard.outputs.skip != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg rclone python3-pip
+          pip3 install --break-system-packages -q opencv-python-headless numpy gdown yt-dlp
+
+      - name: Render 4K60 Shard ${{ matrix.shard }}/6 for Project ${{ matrix.proj }}
+        if: steps.check_shard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
+        run: |
+          set -e
+          mkdir -p ~/.config/rclone
+          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+          python3 scripts/festival_parade_master_pipeline.py "${{ matrix.proj }}" \
+            --manifest parade_batch_newlink3_manifest.json \
+            --shard-prefix newlink3_shard \
+            --shard-idx "${{ matrix.shard }}" \
+            --num-shards 6
+
+          echo "Uploading rendered shard to GitHub Release..."
+          gh release upload parade-4k60-max-cinema output_parade/newlink3_shard_* --clobber
+
+  # =========================================================================
+  # 2. ASSEMBLE 6 SHARDS & SYNC DIRECTLY TO GOOGLE DRIVE
+  # =========================================================================
+  assemble-newlink3-projects:
+    needs: render-newlink3-shards
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        proj: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Filter Target Project
+        run: |
+          TARGET="${{ github.event.inputs.target }}"
+          CURRENT_PROJ="${{ matrix.proj }}"
+          if [ -n "$TARGET" ] && [ "$TARGET" != "all" ] && [ "$TARGET" != "assemble_only" ] && [ "$TARGET" != "$CURRENT_PROJ" ]; then
+            echo "Skipping Project $CURRENT_PROJ (Target is $TARGET)"
+            exit 0
+          fi
+
+      - name: Free Runner Disk Space (35+ GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
+      - name: Checkout Studio Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rclone & Headless Stack
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg rclone python3-pip
+          pip3 install --break-system-packages -q opencv-python-headless numpy
+
+      - name: Check All 6 Shards & Assemble to Google Drive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
+        run: |
+          set -e
+          IDX="${{ matrix.proj }}"
+          SHARD_PREFIX=$(printf "newlink3_shard_%02d_" "$IDX")
+          DRIVE_ID="1NvPAiZyE-oYtKJA6lSzO50q28khHSmWN"
+          MASTER_ID="1ko72inz1CYBvwYQ3RDnSkYmi1uS50ae9"
+
+          mkdir -p ~/.config/rclone output_parade
+          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+          echo "Checking rendered shards for Project $IDX..."
+          ALL_EXIST=true
+          for s in 0 1 2 3 4 5; do
+            S_NAME=$(printf "newlink3_shard_%02d_%02d.mp4" "$IDX" "$s")
+            if ! gh release view parade-4k60-max-cinema --json assets -q ".assets[].name" | grep -q "^${S_NAME}$"; then
+              echo "Missing shard: $S_NAME"
+              ALL_EXIST=false
+            fi
+          done
+
+          if [ "$ALL_EXIST" != "true" ]; then
+            echo "Not all 6 shards exist for Project $IDX - skipping assemble."
+            exit 1
+          fi
+
+          echo "Downloading all 6 shards for Project $IDX..."
+          gh release download parade-4k60-max-cinema -p "${SHARD_PREFIX}*" -D output_parade/ --clobber
+
+          echo "Assembling Project $IDX..."
+          python3 scripts/festival_parade_master_pipeline.py "$IDX" \
+            --manifest parade_batch_newlink3_manifest.json \
+            --shard-prefix newlink3_shard \
+            --assemble-shards 6
+
+          echo "Cleaning up local shards before upload..."
+          rm -f output_parade/${SHARD_PREFIX}*
+
+          echo "Direct sync master video to Link 4 (New Link) folder..."
+          rclone copy output_parade/ "gdrive,root_folder_id=${DRIVE_ID}:Rendered_4K60_Parade_MAX_CINEMA" \
+            --include "*_4K60_MAX_CINEMA.mp4" \
+            --include "*_QA_Report.json" \
+            --include "*_SEO_meta.json" \
+            --transfers 4 --fast-list -v
+
+          echo "Direct sync master video to Unified Master Folder..."
+          rclone copy output_parade/ "gdrive,root_folder_id=${MASTER_ID}:" \
+            --include "*_4K60_MAX_CINEMA.mp4" \
+            --include "*_QA_Report.json" \
+            --include "*_SEO_meta.json" \
+            --transfers 4 --fast-list -v
+
+          echo "Assemble and dual-sync for Project $IDX completed successfully!"
