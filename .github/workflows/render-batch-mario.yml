@@ -164,13 +164,21 @@ jobs:
             --include "*_4K60_MAX_CINEMA.mp4" \
             --include "*_QA_Report.json" \
             --include "*_SEO_meta.json" \
-            --transfers 4 --fast-list -v
+            --drive-chunk-size 128M \
+            --ignore-existing \
+            --retries 5 \
+            --low-level-retries 10 \
+            --transfers 2 --fast-list -v
 
           echo "Direct sync master video to Unified Master Folder..."
           rclone copy output_parade/ "gdrive,root_folder_id=${MASTER_ID}:" \
             --include "*_4K60_MAX_CINEMA.mp4" \
             --include "*_QA_Report.json" \
             --include "*_SEO_meta.json" \
-            --transfers 4 --fast-list -v
+            --drive-chunk-size 128M \
+            --ignore-existing \
+            --retries 5 \
+            --low-level-retries 10 \
+            --transfers 2 --fast-list -v
 
           echo "Assemble and dual-sync for Mario Project $IDX completed successfully!"
