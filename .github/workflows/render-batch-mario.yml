@@ -89,7 +89,7 @@ jobs:
     needs: render-mario-shards
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -128,6 +128,7 @@ jobs:
           SHARD_PREFIX=$(printf "mario_shard_%02d_" "$IDX")
           DRIVE_ID="1yepQpdFR5xt4YLOaSijcp2d6fHeDIbKf"
           MASTER_ID="1ko72inz1CYBvwYQ3RDnSkYmi1uS50ae9"
+          VIEW_ID="1U_l0CUNqK6ckQFyQuGv-qoYY8GCAVM9s"
 
           mkdir -p ~/.config/rclone output_parade
           echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
@@ -172,6 +173,17 @@ jobs:
 
           echo "Direct sync master video to Unified Master Folder..."
           rclone copy output_parade/ "gdrive,root_folder_id=${MASTER_ID}:" \
+            --include "*_4K60_MAX_CINEMA.mp4" \
+            --include "*_QA_Report.json" \
+            --include "*_SEO_meta.json" \
+            --drive-chunk-size 128M \
+            --ignore-existing \
+            --retries 5 \
+            --low-level-retries 10 \
+            --transfers 2 --fast-list -v
+
+          echo "Direct sync master video to Active View Master Folder..."
+          rclone copy output_parade/ "gdrive,root_folder_id=${VIEW_ID}:" \
             --include "*_4K60_MAX_CINEMA.mp4" \
             --include "*_QA_Report.json" \
             --include "*_SEO_meta.json" \
