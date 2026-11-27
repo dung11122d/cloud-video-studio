@@ -1,0 +1,117 @@
+name: Direct Cloud-to-Drive 4K60 MAX CINEMA - Chim (25 Bird Documentaries)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_filter:
+        description: "ALL or substring of project key"
+        required: false
+        default: "ALL"
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build Chim Matrix
+        id: set-matrix
+        run: |
+          python3 - << 'EOF'
+          import json, os
+          from pathlib import Path
+          manifest = json.loads(Path("scripts/birds_chim_manifest.json").read_text(encoding="utf-8-sig"))
+          pf = "${{ inputs.project_filter }}".strip()
+          if not pf or pf.upper() == "ALL":
+              keys = [k for k, v in manifest.items() if v.get("scenes_count", 0) > 0]
+          else:
+              keys = [k for k, v in manifest.items() if pf.lower() in k.lower() and v.get("scenes_count", 0) > 0]
+          print(f"Selected {len(keys)} bird projects for 4K60 rendering.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"matrix={json.dumps(keys)}\n")
+          EOF
+
+  parallel-4k60-chim:
+    needs: prepare-matrix
+    if: ${{ needs.prepare-matrix.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        project: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Free Runner Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
+      - name: Checkout Studio Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Multimedia Stack
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg rclone
+          pip install -q --upgrade pip
+          pip install -q gdown yt-dlp opencv-python-headless numpy
+
+      - name: Configure Rclone & Check Existing on Drive
+        id: check_existing
+        env:
+          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
+          CHIM_FOLDER_ID: '1QSsm2-Wb0U2ARYlxCKv_srgAbh2UBs2J'
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          SAFE_KEY=$(echo "${{ matrix.project }}" | sed 's/[^a-zA-Z0-9._-]/_/g')
+          if rclone lsf "gdrive,root_folder_id=${CHIM_FOLDER_ID}:" --include "${SAFE_KEY}*4K60FPS_Master.mp4" | grep -q "4K60FPS_Master.mp4"; then
+            echo "Already rendered & uploaded in chim folder - skipping!"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Render 4K60 Master (${{ matrix.project }})
+        if: steps.check_existing.outputs.skip != 'true'
+        env:
+          MAX_BITRATE_MBPS: '45'
+          TARGET_CRF: '15'
+          TARGET_PRESET: 'veryfast'
+        run: |
+          python3 scripts/discovery_master_pipeline.py \
+            --project-key "${{ matrix.project }}" \
+            --manifest "scripts/birds_chim_manifest.json" \
+            --resolution "3840x2160" \
+            --fps "60" \
+            --bgm-volume "0.08" \
+            --output-dir "output"
+
+      - name: Direct Upload to Chim Folder on Google Drive
+        if: steps.check_existing.outputs.skip != 'true'
+        env:
+          CHIM_FOLDER_ID: '1QSsm2-Wb0U2ARYlxCKv_srgAbh2UBs2J'
+        run: |
+          rclone copy output/ "gdrive,root_folder_id=${CHIM_FOLDER_ID}:" \
+            --include "*.mp4" \
+            --include "*_QA_Report.json" \
+            --include "*_SEO_meta.json" \
+            --drive-chunk-size 128M \
+            --ignore-existing \
+            --retries 5 \
+            --low-level-retries 10 \
+            --transfers 2 -v
